@@ -4,22 +4,11 @@ from app.schemas.resume import ParsedResume
 from app.services.resume_parser import (
     load_parsed_resume,
     parse_resume_file_to_json,
-    save_parsed_resume,
     save_upload_file,
 )
 
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
-
-
-@router.post("", response_model=dict)
-def create_resume(parsed_resume: ParsedResume):
-    file_path = save_parsed_resume(parsed_resume)
-    return {
-        "status": "saved",
-        "resume_id": parsed_resume.resume_id,
-        "file_path": str(file_path),
-    }
 
 
 @router.post("/parse", response_model=ParsedResume)
