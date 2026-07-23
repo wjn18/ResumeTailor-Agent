@@ -23,6 +23,7 @@ logs/
 # Uploaded source resumes and generated parsed JSON
 app/data/uploads/
 app/data/resumes/
+app/data/job_descriptions/
 
 # Local SQLite databases
 *.sqlite
