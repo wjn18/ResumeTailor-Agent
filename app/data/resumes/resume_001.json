@@ -1,0 +1,53 @@
+{
+  "resume_id": "resume_001",
+  "name": "张三",
+  "email": "zhangsan@example.com",
+  "phone": "123456789",
+  "education": [
+    {
+      "school": "家里蹲",
+      "degree": "大专",
+      "major": "吃屎",
+      "start_date": "1.1",
+      "end_date": "1.1"
+    }
+  ],
+  "skills": [
+    {
+      "name": "string",
+      "category": "string"
+    }
+  ],
+  "projects": [
+    {
+      "project_id": "string",
+      "name": "string",
+      "role": "string",
+      "start_date": "string",
+      "end_date": "string",
+      "technologies": [
+        "string"
+      ],
+      "facts": [
+        {
+          "fact_id": "string",
+          "category": "string",
+          "entity_name": "string",
+          "fact_text": "string",
+          "verified": true,
+          "source_location": "string"
+        }
+      ]
+    }
+  ],
+  "experience_facts": [
+    {
+      "fact_id": "string",
+      "category": "string",
+      "entity_name": "string",
+      "fact_text": "string",
+      "verified": true,
+      "source_location": "string"
+    }
+  ]
+}
