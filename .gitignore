@@ -3,3 +3,28 @@
 !AGENTG.md
 
 .venv/
+
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime logs
+*.log
+logs/
+
+# Uploaded source resumes and generated parsed JSON
+app/data/uploads/
+app/data/resumes/
+
+# Local SQLite databases
+*.sqlite
+*.sqlite3
+*.db
