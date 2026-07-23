@@ -1,0 +1,4 @@
+John Doe
+john@example.com
+Python FastAPI Pydantic SQLite
+Built a resume parsing API.

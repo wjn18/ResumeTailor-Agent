@@ -2,6 +2,12 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 
+class SourceDocument(BaseModel):
+    file_name: str
+    file_type: str
+    text_length: int
+
+
 class Education(BaseModel):
     school: str
     degree: Optional[str] = None
@@ -36,6 +42,7 @@ class Project(BaseModel):
 
 class ParsedResume(BaseModel):
     resume_id: str
+    source_document: Optional[SourceDocument] = None
     name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None

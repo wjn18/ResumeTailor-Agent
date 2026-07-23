@@ -1,0 +1,197 @@
+{
+  "resume_id": "resume_4192717cb820",
+  "source_document": {
+    "file_name": "upload_623bdd57616a4bcda5e20516479b7d4a.pdf",
+    "file_type": "pdf",
+    "text_length": 1923
+  },
+  "name": "吴嘉宁",
+  "email": "2757286950@qq.com",
+  "phone": "18367367610",
+  "education": [],
+  "skills": [
+    {
+      "name": "Python",
+      "category": "detected_keyword"
+    },
+    {
+      "name": "Java",
+      "category": "detected_keyword"
+    },
+    {
+      "name": "MySQL",
+      "category": "detected_keyword"
+    },
+    {
+      "name": "Unity",
+      "category": "detected_keyword"
+    },
+    {
+      "name": "C#",
+      "category": "detected_keyword"
+    }
+  ],
+  "projects": [],
+  "experience_facts": [
+    {
+      "fact_id": "fact_001",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "吴嘉宁",
+      "verified": true,
+      "source_location": "line:1"
+    },
+    {
+      "fact_id": "fact_002",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "性别：男 年龄：21",
+      "verified": true,
+      "source_location": "line:2"
+    },
+    {
+      "fact_id": "fact_003",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "电话：18367367610",
+      "verified": true,
+      "source_location": "line:3"
+    },
+    {
+      "fact_id": "fact_004",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "邮箱：2757286950@qq.com",
+      "verified": true,
+      "source_location": "line:4"
+    },
+    {
+      "fact_id": "fact_005",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "教育经历",
+      "verified": true,
+      "source_location": "line:5"
+    },
+    {
+      "fact_id": "fact_006",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "2024.9-2027.6 南安普顿大学",
+      "verified": true,
+      "source_location": "line:6"
+    },
+    {
+      "fact_id": "fact_007",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "计算机科学 | 本科",
+      "verified": true,
+      "source_location": "line:7"
+    },
+    {
+      "fact_id": "fact_008",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "在校经历",
+      "verified": true,
+      "source_location": "line:8"
+    },
+    {
+      "fact_id": "fact_009",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "2026.3-2026.4 学生会选举志愿者",
+      "verified": true,
+      "source_location": "line:9"
+    },
+    {
+      "fact_id": "fact_010",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "1. 协调各选举人的竞选拉票工作，确保现场秩序并协助其进行宣传工作。",
+      "verified": true,
+      "source_location": "line:10"
+    },
+    {
+      "fact_id": "fact_011",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "2. 帮助学校学生会优化 MySQL 数据库并整理历年数据。",
+      "verified": true,
+      "source_location": "line:11"
+    },
+    {
+      "fact_id": "fact_012",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "3. 协调，统计投票等事务。",
+      "verified": true,
+      "source_location": "line:12"
+    },
+    {
+      "fact_id": "fact_013",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "工作经历",
+      "verified": true,
+      "source_location": "line:13"
+    },
+    {
+      "fact_id": "fact_014",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "2026.06-至今 上海凌树引擎网络科技有限公司",
+      "verified": true,
+      "source_location": "line:14"
+    },
+    {
+      "fact_id": "fact_015",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "游戏开发实习生",
+      "verified": true,
+      "source_location": "line:15"
+    },
+    {
+      "fact_id": "fact_016",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "参与多款单机游戏修改器的制作和测试。",
+      "verified": true,
+      "source_location": "line:16"
+    },
+    {
+      "fact_id": "fact_017",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "编写汇编语言，查找游戏中数据在内存中的位置并进行修改。",
+      "verified": true,
+      "source_location": "line:17"
+    },
+    {
+      "fact_id": "fact_018",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "使用 Cheat Engine 对游戏运行时数据进行观察和验证，辅助定位功能失效、地址偏移、AOB 匹配失败等问题。",
+      "verified": true,
+      "source_location": "line:18"
+    },
+    {
+      "fact_id": "fact_019",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "参与游戏更新后修改器失效问题排查，分析可能原因，如 AOB pattern 不匹配、候选地址变化、函数结构变化、",
+      "verified": true,
+      "source_location": "line:19"
+    },
+    {
+      "fact_id": "fact_020",
+      "category": "resume_line",
+      "entity_name": "raw_resume",
+      "fact_text": "游戏版本更新导致偏移失效等。",
+      "verified": true,
+      "source_location": "line:20"
+    }
+  ]
+}
