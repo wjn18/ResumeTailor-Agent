@@ -75,3 +75,35 @@ class TailoringBuildResponse(BaseModel):
     match_report: RequirementMatchReport
     draft: TailoredResumeDraft
     fact_check_report: FactCheckReport
+    saved_resume: Optional["SavedTailoredResume"] = None
+
+
+class SavedTailoredResume(BaseModel):
+    tailored_resume_id: str
+    display_name: str
+    generated_at: str
+    jd_id: str
+    resume_id: str
+    company: Optional[str] = None
+    job_title: Optional[str] = None
+    draft: TailoredResumeDraft
+    match_report: Optional[RequirementMatchReport] = None
+    fact_check_report: Optional[FactCheckReport] = None
+
+
+class SavedTailoredResumeSummary(BaseModel):
+    tailored_resume_id: str
+    display_name: str
+    generated_at: str
+    jd_id: str
+    resume_id: str
+    company: Optional[str] = None
+    job_title: Optional[str] = None
+
+
+class SaveTailoredResumeRequest(BaseModel):
+    jd: ParsedJD
+    resume: ParsedResume
+    draft: TailoredResumeDraft
+    match_report: Optional[RequirementMatchReport] = None
+    fact_check_report: Optional[FactCheckReport] = None

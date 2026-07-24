@@ -24,6 +24,7 @@ logs/
 app/data/uploads/
 app/data/resumes/
 app/data/job_descriptions/
+app/data/tailored_resumes/
 
 # Local SQLite databases
 *.sqlite

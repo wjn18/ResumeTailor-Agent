@@ -50,3 +50,12 @@ class ParsedResume(BaseModel):
     skills: list[Skill] = Field(default_factory=list)
     projects: list[Project] = Field(default_factory=list)
     experience_facts: list[ExperienceFact] = Field(default_factory=list)
+
+
+class UserFactTextParseRequest(BaseModel):
+    text: str = Field(min_length=1)
+    resume_id: Optional[str] = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    source_name: str = Field(default="user_input", min_length=1, max_length=100)
