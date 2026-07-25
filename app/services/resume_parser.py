@@ -3,10 +3,10 @@ from pathlib import Path
 import shutil
 from uuid import uuid4
 
-from app.schemas.resume import ParsedResume
-from app.schemas.resume import SourceDocument
+from app.schemas.resumes import ParsedResume
+from app.schemas.resumes import SourceDocument
 from app.services.document_reader import read_document_text
-from app.services.llm_client import MinimaxResumeParser, ResumeLLMClient
+from app.services.llm_client import DeepSeekResumeParser, ResumeLLMClient
 
 
 RESUME_DATA_DIR = Path("app/data/resumes")
@@ -48,7 +48,7 @@ def parse_resume_file_to_json(
         file_type=source_file_path.suffix.lower().lstrip("."),
         text_length=len(resume_text),
     )
-    client = parser_client or MinimaxResumeParser()
+    client = parser_client or DeepSeekResumeParser()
     raw_parsed_data = client.parse_resume(resume_text, source_document)
     parsed_resume = ParsedResume.model_validate(raw_parsed_data)
     save_parsed_resume(parsed_resume)

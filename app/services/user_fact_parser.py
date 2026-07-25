@@ -1,8 +1,11 @@
 from uuid import uuid4
 
-from app.schemas.resume import ExperienceFact, ParsedResume, Project, SourceDocument
+from app.schemas.resumes import ExperienceFact, ParsedResume, Project, SourceDocument
 from app.services.resume_parser import load_parsed_resume, save_parsed_resume
-from app.services.user_fact_llm_client import MinimaxUserFactParser, UserFactLLMClient
+from app.services.user_fact_llm_client import (
+    DeepSeekUserFactParser,
+    UserFactLLMClient,
+)
 
 
 def parse_user_fact_text_to_json(
@@ -20,7 +23,7 @@ def parse_user_fact_text_to_json(
         file_type="text",
         text_length=len(normalized_text),
     )
-    client = parser_client or MinimaxUserFactParser()
+    client = parser_client or DeepSeekUserFactParser()
     raw_parsed_data = client.parse_user_facts(normalized_text, source_document)
     parsed_user_facts = ParsedResume.model_validate(raw_parsed_data)
     normalized_user_facts = _normalize_user_fact_source(

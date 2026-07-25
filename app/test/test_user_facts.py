@@ -6,7 +6,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.schemas.resume import (
+from app.schemas.resumes import (
     ExperienceFact,
     ParsedResume,
     Project,

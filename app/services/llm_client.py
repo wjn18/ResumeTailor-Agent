@@ -1,12 +1,9 @@
 from abc import ABC, abstractmethod
-import json
-import os
 import re
 from uuid import uuid4
 
-import httpx
-
-from app.schemas.resume import ExperienceFact, ParsedResume, Skill, SourceDocument
+from app.schemas.resumes import ExperienceFact, ParsedResume, Skill, SourceDocument
+from app.services.deepseek_client import DeepSeekJSONClient
 
 
 class ResumeLLMClient(ABC):
@@ -25,64 +22,23 @@ class ModelAPIResumeParser(ResumeLLMClient):
         prompt = build_resume_parse_prompt(resume_text)
 
         # Plug the real model SDK/API request here.
-        # Expected response: a JSON string matching app.schemas.resume.ParsedResume.
+        # Expected response: a JSON string matching app.schemas.resumes.ParsedResume.
         raise NotImplementedError(
             "Model API is not configured yet. Use prompt to request structured JSON: "
             f"{prompt[:120]}..."
         )
 
 
-class MinimaxResumeParser(ResumeLLMClient):
-    def __init__(
-        self,
-        api_key: str | None = None,
-        model: str | None = None,
-        api_url: str | None = None,
-        timeout_seconds: float = 120,
-    ):
-        self.api_key = api_key or os.getenv("MINIMAX_API_KEY")
-        self.model = model or os.getenv("MINIMAX_MODEL", "MiniMax-M2.7")
-        self.api_url = api_url or os.getenv(
-            "MINIMAX_API_URL",
-            "https://api.minimax.io/v1/chat/completions",
-        )
-        self.timeout_seconds = timeout_seconds
-
-        if not self.api_key:
-            raise RuntimeError("MINIMAX_API_KEY is not set.")
-
+class DeepSeekResumeParser(DeepSeekJSONClient, ResumeLLMClient):
     def parse_resume(self, resume_text: str, source_document: SourceDocument) -> dict:
         prompt = build_resume_parse_prompt(resume_text)
-        response = httpx.post(
-            self.api_url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a strict resume parser. Return only valid JSON. "
-                            "Do not include Markdown, explanations, or unsupported facts."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.1,
-            },
-            timeout=self.timeout_seconds,
+        parsed_data = self.request_json(
+            system_prompt=(
+                "You are a strict resume parser. Return only valid JSON. "
+                "Do not include Markdown, explanations, or unsupported facts."
+            ),
+            user_prompt=prompt,
         )
-
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise RuntimeError(f"MiniMax API request failed: {response.text}") from exc
-
-        content = _extract_message_content(response.json())
-        parsed_data = parse_model_json_response(content)
         parsed_data["source_document"] = source_document.model_dump()
         return ParsedResume.model_validate(parsed_data).model_dump()
 
@@ -134,14 +90,6 @@ class LocalFallbackResumeParser(ResumeLLMClient):
             skills=skills,
             experience_facts=facts,
         ).model_dump()
-
-
-def parse_model_json_response(response_text: str) -> dict:
-    response_text = _extract_json_text(response_text)
-    try:
-        return json.loads(response_text)
-    except json.JSONDecodeError as exc:
-        raise ValueError("Model response is not valid JSON.") from exc
 
 
 def build_resume_parse_prompt(resume_text: str) -> str:
@@ -202,27 +150,6 @@ Return valid JSON matching this shape:
 Resume text:
 {resume_text}
 """.strip()
-
-
-def _extract_message_content(response_data: dict) -> str:
-    try:
-        return response_data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError(f"Unexpected MiniMax response shape: {response_data}") from exc
-
-
-def _extract_json_text(text: str) -> str:
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-    fenced_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL)
-    if fenced_match:
-        text = fenced_match.group(1).strip()
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        return text
-
-    return text[start : end + 1]
 
 
 def _find_first(pattern: str, text: str) -> str | None:

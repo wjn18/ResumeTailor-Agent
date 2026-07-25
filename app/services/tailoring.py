@@ -1,13 +1,10 @@
 from abc import ABC, abstractmethod
 import json
-import os
 import re
 from typing import Iterable
 
-import httpx
-
-from app.schemas.job_description import JDRequirement, ParsedJD
-from app.schemas.resume import ExperienceFact, ParsedResume
+from app.schemas.jds import JDRequirement, ParsedJD
+from app.schemas.resumes import ExperienceFact, ParsedResume
 from app.schemas.tailoring import (
     FactCheckReport,
     RequirementMatch,
@@ -16,7 +13,7 @@ from app.schemas.tailoring import (
     TailoredResumeDraft,
     TailoredSentence,
 )
-from app.services.llm_client import parse_model_json_response
+from app.services.deepseek_client import DeepSeekJSONClient
 
 
 MATCHED = "matched"
@@ -50,27 +47,9 @@ class TailoringLLMClient(ABC):
         """Return a dict that can be validated as FactCheckReport."""
 
 
-class MinimaxTailoringClient(TailoringLLMClient):
-    def __init__(
-        self,
-        api_key: str | None = None,
-        model: str | None = None,
-        api_url: str | None = None,
-        timeout_seconds: float = 120,
-    ):
-        self.api_key = api_key or os.getenv("MINIMAX_API_KEY")
-        self.model = model or os.getenv("MINIMAX_MODEL", "MiniMax-M2.7")
-        self.api_url = api_url or os.getenv(
-            "MINIMAX_API_URL",
-            "https://api.minimax.io/v1/chat/completions",
-        )
-        self.timeout_seconds = timeout_seconds
-
-        if not self.api_key:
-            raise RuntimeError("MINIMAX_API_KEY is not set.")
-
+class DeepSeekTailoringClient(DeepSeekJSONClient, TailoringLLMClient):
     def match_requirements(self, jd: ParsedJD, resume: ParsedResume) -> dict:
-        return self._request_json(
+        return self.request_json(
             system_prompt=(
                 "You are a strict evidence matcher for resume tailoring. "
                 "Use only provided candidate facts and fact_id values."
@@ -84,7 +63,7 @@ class MinimaxTailoringClient(TailoringLLMClient):
         resume: ParsedResume,
         match_report: RequirementMatchReport,
     ) -> dict:
-        return self._request_json(
+        return self.request_json(
             system_prompt=(
                 "You are a fact-grounded resume writer. "
                 "Every sentence must cite source_fact_ids from the provided facts."
@@ -98,40 +77,13 @@ class MinimaxTailoringClient(TailoringLLMClient):
         resume: ParsedResume,
         draft: TailoredResumeDraft,
     ) -> dict:
-        return self._request_json(
+        return self.request_json(
             system_prompt=(
                 "You are a strict resume fact checker. "
                 "Check whether each generated sentence is fully supported by its source_fact_ids."
             ),
             user_prompt=build_fact_check_prompt(jd_id, resume, draft),
         )
-
-    def _request_json(self, system_prompt: str, user_prompt: str) -> dict:
-        response = httpx.post(
-            self.api_url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0.1,
-            },
-            timeout=self.timeout_seconds,
-        )
-
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise RuntimeError(f"MiniMax API request failed: {response.text}") from exc
-
-        content = _extract_message_content(response.json())
-        return parse_model_json_response(content)
-
 
 class LocalFallbackTailoringClient(TailoringLLMClient):
     def match_requirements(self, jd: ParsedJD, resume: ParsedResume) -> dict:
@@ -258,7 +210,7 @@ def match_requirements(
     resume: ParsedResume,
     client: TailoringLLMClient | None = None,
 ) -> RequirementMatchReport:
-    raw_report = (client or MinimaxTailoringClient()).match_requirements(jd, resume)
+    raw_report = (client or DeepSeekTailoringClient()).match_requirements(jd, resume)
     report = RequirementMatchReport.model_validate(raw_report)
     return validate_match_report(report, jd, resume)
 
@@ -270,7 +222,11 @@ def rewrite_resume(
     client: TailoringLLMClient | None = None,
 ) -> TailoredResumeDraft:
     match_report = match_report or match_requirements(jd, resume, client=client)
-    raw_draft = (client or MinimaxTailoringClient()).rewrite_resume(jd, resume, match_report)
+    raw_draft = (client or DeepSeekTailoringClient()).rewrite_resume(
+        jd,
+        resume,
+        match_report,
+    )
     draft = TailoredResumeDraft.model_validate(raw_draft)
     return validate_tailored_resume_draft(draft, jd, resume)
 
@@ -281,7 +237,11 @@ def fact_check_resume(
     draft: TailoredResumeDraft,
     client: TailoringLLMClient | None = None,
 ) -> FactCheckReport:
-    raw_report = (client or MinimaxTailoringClient()).fact_check_resume(jd_id, resume, draft)
+    raw_report = (client or DeepSeekTailoringClient()).fact_check_resume(
+        jd_id,
+        resume,
+        draft,
+    )
     report = FactCheckReport.model_validate(raw_report)
     return validate_fact_check_report(report, jd_id, resume, draft)
 
@@ -291,7 +251,7 @@ def build_tailored_resume(
     resume: ParsedResume,
     client: TailoringLLMClient | None = None,
 ) -> tuple[RequirementMatchReport, TailoredResumeDraft, FactCheckReport]:
-    client = client or MinimaxTailoringClient()
+    client = client or DeepSeekTailoringClient()
     match_report = match_requirements(jd, resume, client=client)
     draft = rewrite_resume(jd, resume, match_report=match_report, client=client)
     fact_check_report = fact_check_resume(jd.jd_id, resume, draft, client=client)
@@ -595,13 +555,6 @@ Candidate facts:
 Generated draft:
 {draft.model_dump_json(indent=2)}
 """.strip()
-
-
-def _extract_message_content(response_data: dict) -> str:
-    try:
-        return response_data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError(f"Unexpected MiniMax response shape: {response_data}") from exc
 
 
 def _has_text_overlap(left: JDRequirement | str, right: str) -> bool:

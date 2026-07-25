@@ -1,12 +1,9 @@
 from abc import ABC, abstractmethod
-import os
 import re
 from uuid import uuid4
 
-import httpx
-
-from app.schemas.resume import ExperienceFact, ParsedResume, Skill, SourceDocument
-from app.services.llm_client import parse_model_json_response
+from app.schemas.resumes import ExperienceFact, ParsedResume, Skill, SourceDocument
+from app.services.deepseek_client import DeepSeekJSONClient
 
 
 class UserFactLLMClient(ABC):
@@ -19,63 +16,19 @@ class UserFactLLMClient(ABC):
         """Return a dict that can be validated as ParsedResume."""
 
 
-class MinimaxUserFactParser(UserFactLLMClient):
-    def __init__(
-        self,
-        api_key: str | None = None,
-        model: str | None = None,
-        api_url: str | None = None,
-        timeout_seconds: float = 120,
-    ):
-        self.api_key = api_key or os.getenv("MINIMAX_API_KEY")
-        self.model = model or os.getenv("MINIMAX_MODEL", "MiniMax-M2.7")
-        self.api_url = api_url or os.getenv(
-            "MINIMAX_API_URL",
-            "https://api.minimax.io/v1/chat/completions",
-        )
-        self.timeout_seconds = timeout_seconds
-
-        if not self.api_key:
-            raise RuntimeError("MINIMAX_API_KEY is not set.")
-
+class DeepSeekUserFactParser(DeepSeekJSONClient, UserFactLLMClient):
     def parse_user_facts(
         self,
         user_text: str,
         source_document: SourceDocument,
     ) -> dict:
-        response = httpx.post(
-            self.api_url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a strict candidate fact parser. Return only valid JSON. "
-                            "Extract only claims explicitly stated by the user."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": build_user_fact_parse_prompt(user_text),
-                    },
-                ],
-                "temperature": 0.1,
-            },
-            timeout=self.timeout_seconds,
+        parsed_data = self.request_json(
+            system_prompt=(
+                "You are a strict candidate fact parser. Return only valid JSON. "
+                "Extract only claims explicitly stated by the user."
+            ),
+            user_prompt=build_user_fact_parse_prompt(user_text),
         )
-
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise RuntimeError(f"MiniMax API request failed: {response.text}") from exc
-
-        content = _extract_message_content(response.json())
-        parsed_data = parse_model_json_response(content)
         parsed_data["source_document"] = source_document.model_dump()
         return ParsedResume.model_validate(parsed_data).model_dump()
 
@@ -197,10 +150,3 @@ Return valid JSON matching this shape:
 User input:
 {user_text}
 """.strip()
-
-
-def _extract_message_content(response_data: dict) -> str:
-    try:
-        return response_data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError(f"Unexpected MiniMax response shape: {response_data}") from exc

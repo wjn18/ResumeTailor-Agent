@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from app.schemas.job_description import ParsedJD
-from app.services.jd_llm_client import JDLLMClient, MinimaxJDParser
+from app.schemas.jds import ParsedJD
+from app.services.jd_llm_client import DeepSeekJDParser, JDLLMClient
 
 
 JD_DATA_DIR = Path("app/data/job_descriptions")
@@ -36,7 +36,7 @@ def parse_jd_text_to_json(
     if not jd_text.strip():
         raise ValueError("JD text cannot be empty.")
 
-    client = parser_client or MinimaxJDParser()
+    client = parser_client or DeepSeekJDParser()
     raw_parsed_data = client.parse_jd(jd_text, company=company, job_title=job_title)
     parsed_jd = ParsedJD.model_validate(raw_parsed_data)
     save_parsed_jd(parsed_jd)

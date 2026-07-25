@@ -1,6 +1,6 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from app.schemas.resume import ParsedResume
+from app.schemas.resumes import ParsedResume
 from app.services.resume_parser import (
     load_parsed_resume,
     parse_resume_file_to_json,

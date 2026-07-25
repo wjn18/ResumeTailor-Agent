@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from app.schemas.job_description import JDParseRequest, ParsedJD
+from app.schemas.jds import JDParseRequest, ParsedJD
 from app.services.jd_parser import load_parsed_jd, parse_jd_text_to_json
 
 

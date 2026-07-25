@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from app.schemas.resume import ParsedResume, UserFactTextParseRequest
+from app.schemas.resumes import ParsedResume, UserFactTextParseRequest
 from app.services.user_fact_parser import parse_user_fact_text_to_json
 
 

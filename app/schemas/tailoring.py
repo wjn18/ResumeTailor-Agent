@@ -1,8 +1,8 @@
 from pydantic import BaseModel, Field
 from typing import Optional
 
-from app.schemas.job_description import ParsedJD
-from app.schemas.resume import ParsedResume
+from app.schemas.jds import ParsedJD
+from app.schemas.resumes import ParsedResume
 
 
 class RequirementMatch(BaseModel):

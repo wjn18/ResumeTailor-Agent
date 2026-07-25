@@ -3,8 +3,8 @@ from pathlib import Path
 from uuid import uuid4
 from datetime import datetime, timezone
 
-from app.schemas.job_description import ParsedJD
-from app.schemas.resume import ParsedResume
+from app.schemas.jds import ParsedJD
+from app.schemas.resumes import ParsedResume
 from app.schemas.tailoring import (
     FactCheckReport,
     RequirementMatchReport,
