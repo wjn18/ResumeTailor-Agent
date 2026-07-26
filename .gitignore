@@ -3,6 +3,10 @@
 !AGENTG.md
 
 .venv/
+node_modules/
+.next/
+frontend/out/
+*.tsbuildinfo
 
 # Python cache and test artifacts
 __pycache__/

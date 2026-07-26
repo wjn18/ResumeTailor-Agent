@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.crud import router as crud_router
 from app.api.jds import router as jds_router
@@ -7,6 +8,16 @@ from app.api.tailoring import router as tailoring_router
 from app.api.user_facts import router as user_facts_router
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(crud_router)
 app.include_router(jds_router)
 app.include_router(resumes_router)

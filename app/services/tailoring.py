@@ -7,6 +7,9 @@ from app.schemas.jds import JDRequirement, ParsedJD
 from app.schemas.resumes import ExperienceFact, ParsedResume
 from app.schemas.tailoring import (
     FactCheckReport,
+    FormalEducation,
+    FormalProject,
+    FormalResumeDocument,
     RequirementMatch,
     RequirementMatchReport,
     SentenceFactCheck,
@@ -46,6 +49,16 @@ class TailoringLLMClient(ABC):
     ) -> dict:
         """Return a dict that can be validated as FactCheckReport."""
 
+    @abstractmethod
+    def revise_after_fact_check(
+        self,
+        jd: ParsedJD,
+        resume: ParsedResume,
+        draft: TailoredResumeDraft,
+        fact_check_report: FactCheckReport,
+    ) -> dict:
+        """Return a corrected TailoredResumeDraft after applying the audit."""
+
 
 class DeepSeekTailoringClient(DeepSeekJSONClient, TailoringLLMClient):
     def match_requirements(self, jd: ParsedJD, resume: ParsedResume) -> dict:
@@ -84,6 +97,27 @@ class DeepSeekTailoringClient(DeepSeekJSONClient, TailoringLLMClient):
             ),
             user_prompt=build_fact_check_prompt(jd_id, resume, draft),
         )
+
+    def revise_after_fact_check(
+        self,
+        jd: ParsedJD,
+        resume: ParsedResume,
+        draft: TailoredResumeDraft,
+        fact_check_report: FactCheckReport,
+    ) -> dict:
+        return self.request_json(
+            system_prompt=(
+                "You revise audited resume content using only cited candidate facts. "
+                "Remove or safely rewrite every unsupported phrase and return valid JSON."
+            ),
+            user_prompt=build_revision_prompt(
+                jd,
+                resume,
+                draft,
+                fact_check_report,
+            ),
+        )
+
 
 class LocalFallbackTailoringClient(TailoringLLMClient):
     def match_requirements(self, jd: ParsedJD, resume: ParsedResume) -> dict:
@@ -204,6 +238,53 @@ class LocalFallbackTailoringClient(TailoringLLMClient):
             checks=checks,
         ).model_dump()
 
+    def revise_after_fact_check(
+        self,
+        jd: ParsedJD,
+        resume: ParsedResume,
+        draft: TailoredResumeDraft,
+        fact_check_report: FactCheckReport,
+    ) -> dict:
+        facts_by_id = fact_index(resume)
+        checks = {
+            (check.section, check.sentence): check
+            for check in fact_check_report.checks
+        }
+
+        def revise_section(sentences: list[TailoredSentence]) -> list[TailoredSentence]:
+            revised = []
+            seen = set()
+            for sentence in sentences:
+                check = checks.get((sentence.section, sentence.sentence))
+                if check is None or check.support_status == SUPPORTED:
+                    candidates = [sentence]
+                else:
+                    candidates = [
+                        TailoredSentence(
+                            section=sentence.section,
+                            sentence=facts_by_id[fact_id].fact_text,
+                            source_fact_ids=[fact_id],
+                        )
+                        for fact_id in sentence.source_fact_ids
+                        if fact_id in facts_by_id
+                    ]
+
+                for candidate in candidates:
+                    key = (candidate.section, candidate.sentence)
+                    if key not in seen:
+                        seen.add(key)
+                        revised.append(candidate)
+            return revised
+
+        return TailoredResumeDraft(
+            jd_id=jd.jd_id,
+            resume_id=resume.resume_id,
+            headline=draft.headline or jd.job_title,
+            summary=revise_section(draft.summary),
+            experience=revise_section(draft.experience),
+            skills=revise_section(draft.skills),
+        ).model_dump()
+
 
 def match_requirements(
     jd: ParsedJD,
@@ -246,16 +327,139 @@ def fact_check_resume(
     return validate_fact_check_report(report, jd_id, resume, draft)
 
 
+def revise_after_fact_check(
+    jd: ParsedJD,
+    resume: ParsedResume,
+    draft: TailoredResumeDraft,
+    fact_check_report: FactCheckReport,
+    client: TailoringLLMClient | None = None,
+) -> TailoredResumeDraft:
+    if all(
+        check.support_status == SUPPORTED
+        for check in fact_check_report.checks
+    ):
+        return draft
+
+    raw_draft = (client or DeepSeekTailoringClient()).revise_after_fact_check(
+        jd,
+        resume,
+        draft,
+        fact_check_report,
+    )
+    revised_draft = TailoredResumeDraft.model_validate(raw_draft)
+    return validate_tailored_resume_draft(revised_draft, jd, resume)
+
+
 def build_tailored_resume(
     jd: ParsedJD,
     resume: ParsedResume,
     client: TailoringLLMClient | None = None,
-) -> tuple[RequirementMatchReport, TailoredResumeDraft, FactCheckReport]:
+) -> tuple[
+    RequirementMatchReport,
+    TailoredResumeDraft,
+    FactCheckReport,
+    TailoredResumeDraft,
+    FactCheckReport,
+]:
     client = client or DeepSeekTailoringClient()
     match_report = match_requirements(jd, resume, client=client)
-    draft = rewrite_resume(jd, resume, match_report=match_report, client=client)
-    fact_check_report = fact_check_resume(jd.jd_id, resume, draft, client=client)
-    return match_report, draft, fact_check_report
+    initial_draft = rewrite_resume(
+        jd,
+        resume,
+        match_report=match_report,
+        client=client,
+    )
+    fact_check_report = fact_check_resume(
+        jd.jd_id,
+        resume,
+        initial_draft,
+        client=client,
+    )
+    revised_draft = revise_after_fact_check(
+        jd,
+        resume,
+        initial_draft,
+        fact_check_report,
+        client=client,
+    )
+    final_fact_check_report = fact_check_resume(
+        jd.jd_id,
+        resume,
+        revised_draft,
+        client=client,
+    )
+    if any(
+        check.support_status != SUPPORTED
+        for check in final_fact_check_report.checks
+    ):
+        revised_draft = revise_after_fact_check(
+            jd,
+            resume,
+            revised_draft,
+            final_fact_check_report,
+            client=client,
+        )
+        final_fact_check_report = fact_check_resume(
+            jd.jd_id,
+            resume,
+            revised_draft,
+            client=client,
+        )
+    return (
+        match_report,
+        initial_draft,
+        fact_check_report,
+        revised_draft,
+        final_fact_check_report,
+    )
+
+
+def assemble_formal_resume(
+    jd: ParsedJD,
+    resume: ParsedResume,
+    revised_draft: TailoredResumeDraft,
+) -> FormalResumeDocument:
+    generated_skill_text = [
+        sentence.sentence.strip()
+        for sentence in revised_draft.skills
+        if sentence.sentence.strip()
+    ]
+    parsed_skill_text = [
+        skill.name.strip()
+        for skill in resume.skills
+        if skill.name.strip()
+    ]
+
+    return FormalResumeDocument(
+        name=resume.name,
+        headline=revised_draft.headline or jd.job_title,
+        email=resume.email,
+        phone=resume.phone,
+        summary=[
+            sentence.sentence
+            for sentence in revised_draft.summary
+        ],
+        experience=[
+            sentence.sentence
+            for sentence in revised_draft.experience
+        ],
+        education=[
+            FormalEducation.model_validate(education.model_dump())
+            for education in resume.education
+        ],
+        projects=[
+            FormalProject(
+                name=project.name,
+                role=project.role,
+                start_date=project.start_date,
+                end_date=project.end_date,
+                technologies=project.technologies,
+                bullets=[fact.fact_text for fact in project.facts],
+            )
+            for project in resume.projects
+        ],
+        skills=_deduplicate_text(generated_skill_text + parsed_skill_text),
+    )
 
 
 def validate_match_report(
@@ -263,15 +467,20 @@ def validate_match_report(
     jd: ParsedJD,
     resume: ParsedResume,
 ) -> RequirementMatchReport:
-    valid_requirement_ids = {
-        requirement.requirement_id
-        for requirement in normalized_requirements(jd)
+    requirements = normalized_requirements(jd)
+    requirements_by_id = {
+        requirement.requirement_id: requirement
+        for requirement in requirements
     }
     valid_fact_ids = set(fact_index(resume))
     validated_matches = []
+    matched_requirement_ids = set()
 
     for match in report.matches:
-        if match.requirement_id not in valid_requirement_ids:
+        if (
+            match.requirement_id not in requirements_by_id
+            or match.requirement_id in matched_requirement_ids
+        ):
             continue
 
         matched_fact_ids = [
@@ -289,6 +498,23 @@ def validate_match_report(
                     if matched_fact_ids
                     else "Information is insufficient in the provided fact library.",
                 }
+            )
+        )
+        matched_requirement_ids.add(match.requirement_id)
+
+    for requirement in requirements:
+        if requirement.requirement_id in matched_requirement_ids:
+            continue
+        validated_matches.append(
+            RequirementMatch(
+                requirement_id=requirement.requirement_id,
+                requirement_text=requirement.requirement_text,
+                match_status=UNKNOWN,
+                matched_fact_ids=[],
+                reasoning=(
+                    "The matching response omitted this requirement; "
+                    "information is treated as insufficient."
+                ),
             )
         )
 
@@ -335,14 +561,17 @@ def validate_fact_check_report(
     draft: TailoredResumeDraft,
 ) -> FactCheckReport:
     valid_fact_ids = set(fact_index(resume))
+    draft_sentence_list = list(iter_tailored_sentences(draft))
     draft_sentences = {
         (sentence.section, sentence.sentence)
-        for sentence in iter_tailored_sentences(draft)
+        for sentence in draft_sentence_list
     }
     checks = []
+    checked_sentences = set()
 
     for check in report.checks:
-        if (check.section, check.sentence) not in draft_sentences:
+        sentence_key = (check.section, check.sentence)
+        if sentence_key not in draft_sentences or sentence_key in checked_sentences:
             continue
 
         source_fact_ids = [
@@ -362,6 +591,28 @@ def validate_fact_check_report(
                     "source_fact_ids": source_fact_ids,
                     "support_status": support_status,
                 }
+            )
+        )
+        checked_sentences.add(sentence_key)
+
+    for sentence in draft_sentence_list:
+        sentence_key = (sentence.section, sentence.sentence)
+        if sentence_key in checked_sentences:
+            continue
+        checks.append(
+            SentenceFactCheck(
+                section=sentence.section,
+                sentence=sentence.sentence,
+                source_fact_ids=[
+                    fact_id
+                    for fact_id in sentence.source_fact_ids
+                    if fact_id in valid_fact_ids
+                ],
+                support_status=PARTIALLY_SUPPORTED,
+                issue="The fact-check response omitted this generated sentence.",
+                suggestion=(
+                    "Review the sentence and rewrite it using only its cited facts."
+                ),
             )
         )
 
@@ -555,6 +806,68 @@ Candidate facts:
 Generated draft:
 {draft.model_dump_json(indent=2)}
 """.strip()
+
+
+def build_revision_prompt(
+    jd: ParsedJD,
+    resume: ParsedResume,
+    draft: TailoredResumeDraft,
+    fact_check_report: FactCheckReport,
+) -> str:
+    facts = [fact.model_dump() for fact in collect_resume_facts(resume)]
+    return f"""
+Revise the resume draft after fact checking.
+
+Rules:
+- Keep supported sentences factual and concise.
+- For every partially_supported or unsupported sentence, apply the audit
+  suggestion only when the result is fully supported by cited facts.
+- Delete unsupported wording when it cannot be safely rewritten.
+- Do not add technology, numbers, seniority, proficiency, roles, or outcomes.
+- Do not combine unrelated projects into one claim.
+- Every returned sentence must cite one or more provided source_fact_ids.
+- Return the complete revised draft as valid JSON.
+
+Return valid JSON:
+{{
+  "jd_id": "{jd.jd_id}",
+  "resume_id": "{resume.resume_id}",
+  "headline": "string or null",
+  "summary": [
+    {{"section": "summary", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+  ],
+  "experience": [
+    {{"section": "experience", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+  ],
+  "skills": [
+    {{"section": "skills", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+  ]
+}}
+
+Target JD:
+{jd.model_dump_json(indent=2)}
+
+Candidate facts:
+{json.dumps(facts, ensure_ascii=False, indent=2)}
+
+Draft before revision:
+{draft.model_dump_json(indent=2)}
+
+Fact-check report:
+{fact_check_report.model_dump_json(indent=2)}
+""".strip()
+
+
+def _deduplicate_text(items: list[str]) -> list[str]:
+    result = []
+    seen = set()
+    for item in items:
+        normalized = item.strip()
+        key = normalized.casefold()
+        if normalized and key not in seen:
+            seen.add(key)
+            result.append(normalized)
+    return result
 
 
 def _has_text_overlap(left: JDRequirement | str, right: str) -> bool:

@@ -7,6 +7,7 @@ from app.schemas.jds import ParsedJD
 from app.schemas.resumes import ParsedResume
 from app.schemas.tailoring import (
     FactCheckReport,
+    FormalResumeDocument,
     RequirementMatchReport,
     SavedTailoredResume,
     SavedTailoredResumeSummary,
@@ -21,27 +22,32 @@ def save_tailored_resume(
     jd: ParsedJD,
     resume: ParsedResume,
     draft: TailoredResumeDraft,
+    initial_draft: TailoredResumeDraft | None = None,
+    formal_resume: FormalResumeDocument | None = None,
     match_report: RequirementMatchReport | None = None,
     fact_check_report: FactCheckReport | None = None,
+    final_fact_check_report: FactCheckReport | None = None,
 ) -> SavedTailoredResume:
     TAILORED_RESUME_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
     saved_resume = SavedTailoredResume(
         tailored_resume_id=f"tailored_{uuid4().hex[:12]}",
         display_name=build_unique_display_name(jd),
-        generated_at=datetime.now(timezone.utc).isoformat(),
+        generated_at=now,
         jd_id=jd.jd_id,
         resume_id=resume.resume_id,
         company=jd.company,
         job_title=jd.job_title,
         draft=draft,
+        initial_draft=initial_draft,
+        formal_resume=formal_resume,
         match_report=match_report,
         fact_check_report=fact_check_report,
+        final_fact_check_report=final_fact_check_report,
+        status="draft",
+        updated_at=now,
     )
-    file_path = _file_path(saved_resume.tailored_resume_id)
-
-    with file_path.open("w", encoding="utf-8") as file:
-        json.dump(saved_resume.model_dump(), file, ensure_ascii=False, indent=2)
-
+    _write_tailored_resume(saved_resume)
     return saved_resume
 
 
@@ -68,6 +74,8 @@ def list_tailored_resumes() -> list[SavedTailoredResumeSummary]:
                 resume_id=saved_resume.resume_id,
                 company=saved_resume.company,
                 job_title=saved_resume.job_title,
+                status=saved_resume.status,
+                docx_file_name=saved_resume.docx_file_name,
             )
         )
 
@@ -95,5 +103,52 @@ def build_display_name(jd: ParsedJD) -> str:
     return f"{company}{job_title}简历"
 
 
+def update_formal_resume(
+    tailored_resume_id: str,
+    formal_resume: FormalResumeDocument,
+) -> SavedTailoredResume:
+    saved_resume = load_tailored_resume(tailored_resume_id)
+    updated_resume = saved_resume.model_copy(
+        update={
+            "formal_resume": formal_resume,
+            "status": "draft",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "confirmed_at": None,
+            "docx_file_name": None,
+        }
+    )
+    _write_tailored_resume(updated_resume)
+    return updated_resume
+
+
+def mark_tailored_resume_confirmed(
+    tailored_resume_id: str,
+    formal_resume: FormalResumeDocument,
+    docx_file_name: str,
+) -> SavedTailoredResume:
+    saved_resume = load_tailored_resume(tailored_resume_id)
+    now = datetime.now(timezone.utc).isoformat()
+    confirmed_resume = saved_resume.model_copy(
+        update={
+            "formal_resume": formal_resume,
+            "status": "confirmed",
+            "updated_at": now,
+            "confirmed_at": now,
+            "docx_file_name": docx_file_name,
+        }
+    )
+    _write_tailored_resume(confirmed_resume)
+    return confirmed_resume
+
+
 def _file_path(tailored_resume_id: str) -> Path:
     return TAILORED_RESUME_DATA_DIR / f"{tailored_resume_id}.json"
+
+
+def _write_tailored_resume(saved_resume: SavedTailoredResume) -> None:
+    TAILORED_RESUME_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with _file_path(saved_resume.tailored_resume_id).open(
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(saved_resume.model_dump(), file, ensure_ascii=False, indent=2)
