@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 
 
@@ -18,7 +18,29 @@ class Education(BaseModel):
 
 class Skill(BaseModel):
     name: str
+    proficiency: str = "了解"
     category: Optional[str] = None
+    evidence_fact_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("proficiency", mode="before")
+    @classmethod
+    def normalize_proficiency(cls, value) -> str:
+        if not isinstance(value, str):
+            return "了解"
+
+        normalized = value.strip()
+        aliases = {
+            "入门": "了解",
+            "基础": "了解",
+            "掌握": "熟悉",
+            "较熟悉": "熟悉",
+            "较为熟悉": "熟悉",
+            "熟练掌握": "熟练",
+            "高级": "熟练",
+            "专家": "精通",
+        }
+        normalized = aliases.get(normalized, normalized)
+        return normalized if normalized in {"了解", "熟悉", "熟练", "精通"} else "了解"
 
 
 class ExperienceFact(BaseModel):

@@ -63,11 +63,6 @@ class LocalFallbackResumeParser(ResumeLLMClient):
         lines = [line.strip() for line in resume_text.splitlines() if line.strip()]
         email = _find_first(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", resume_text)
         phone = _find_first(r"(?:\+?\d[\d\s-]{7,}\d)", resume_text)
-        skills = [
-            Skill(name=skill, category="detected_keyword")
-            for skill in self.COMMON_SKILLS
-            if re.search(rf"(?<!\w){re.escape(skill)}(?!\w)", resume_text, re.IGNORECASE)
-        ]
 
         facts = [
             ExperienceFact(
@@ -80,6 +75,31 @@ class LocalFallbackResumeParser(ResumeLLMClient):
             )
             for index, line in enumerate(lines[:20], start=1)
         ]
+        skills = []
+        for skill_name in self.COMMON_SKILLS:
+            if not re.search(
+                rf"(?<!\w){re.escape(skill_name)}(?!\w)",
+                resume_text,
+                re.IGNORECASE,
+            ):
+                continue
+            evidence_fact_ids = [
+                fact.fact_id
+                for fact in facts
+                if re.search(
+                    rf"(?<!\w){re.escape(skill_name)}(?!\w)",
+                    fact.fact_text,
+                    re.IGNORECASE,
+                )
+            ]
+            skills.append(
+                Skill(
+                    name=skill_name,
+                    proficiency=_infer_proficiency(resume_text, skill_name),
+                    category="detected_keyword",
+                    evidence_fact_ids=evidence_fact_ids,
+                )
+            )
 
         return ParsedResume(
             resume_id=f"resume_{uuid4().hex[:12]}",
@@ -97,6 +117,25 @@ def build_resume_parse_prompt(resume_text: str) -> str:
 You are a resume parsing engine for a fact-grounded resume tailoring system.
 Extract only facts that are supported by the resume text. Do not invent content.
 
+Fact extraction rules:
+- Split each work or project paragraph into atomic facts. One fact should express
+  one main action, responsibility, capability, or result.
+- fact_text must be a complete, natural sentence rather than a keyword, label,
+  or comma-separated technology list.
+- Preserve the action, object, context, method/technology, and result when they
+  are explicitly present. Never invent a result or metric.
+- Prefer 3-6 atomic facts for a detailed project instead of one oversized fact.
+- Keep every fact_id unique across experience_facts and all project facts.
+
+Skill rules:
+- Every skill must include one proficiency modifier: 了解, 熟悉, 熟练, or 精通.
+- Use an explicitly stated proficiency when present.
+- Otherwise infer conservatively from evidence: an isolated mention means 了解;
+  substantive use in one context means 熟悉; repeated use or independent delivery
+  may mean 熟练. Use 精通 only when the source explicitly says 精通.
+- Every skill must cite evidence_fact_ids for facts that demonstrate its use.
+- Do not create a skill from an unsupported keyword.
+
 Return valid JSON matching this shape:
 {{
   "resume_id": "string",
@@ -113,7 +152,12 @@ Return valid JSON matching this shape:
     }}
   ],
   "skills": [
-    {{"name": "string", "category": "string or null"}}
+    {{
+      "name": "string",
+      "proficiency": "了解 | 熟悉 | 熟练 | 精通",
+      "category": "string or null",
+      "evidence_fact_ids": ["fact_id"]
+    }}
   ],
   "projects": [
     {{
@@ -150,6 +194,22 @@ Return valid JSON matching this shape:
 Resume text:
 {resume_text}
 """.strip()
+
+
+def _infer_proficiency(text: str, skill_name: str) -> str:
+    nearby_pattern = rf".{{0,12}}{re.escape(skill_name)}.{{0,12}}"
+    nearby_matches = re.findall(nearby_pattern, text, re.IGNORECASE)
+    nearby_text = " ".join(nearby_matches)
+    for marker, proficiency in (
+        ("精通", "精通"),
+        ("熟练", "熟练"),
+        ("熟悉", "熟悉"),
+        ("掌握", "熟悉"),
+        ("了解", "了解"),
+    ):
+        if marker in nearby_text:
+            return proficiency
+    return "熟悉"
 
 
 def _find_first(pattern: str, text: str) -> str | None:

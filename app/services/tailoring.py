@@ -76,13 +76,29 @@ class DeepSeekTailoringClient(DeepSeekJSONClient, TailoringLLMClient):
         resume: ParsedResume,
         match_report: RequirementMatchReport,
     ) -> dict:
-        return self.request_json(
+        prompt = build_rewrite_prompt(jd, resume, match_report)
+        draft = self.request_json(
             system_prompt=(
                 "You are a fact-grounded resume writer. "
                 "Every sentence must cite source_fact_ids from the provided facts."
             ),
-            user_prompt=build_rewrite_prompt(jd, resume, match_report),
+            user_prompt=prompt,
         )
+        if _draft_needs_content_retry(draft, resume):
+            draft = self.request_json(
+                system_prompt=(
+                    "You are a fact-grounded resume writer correcting an incomplete "
+                    "draft. Every sentence must cite source_fact_ids."
+                ),
+                user_prompt=(
+                    f"{prompt}\n\n"
+                    "The previous response did not meet the content requirements. "
+                    "Return 3-4 substantive summary sentences and, when supported "
+                    "candidate skills exist, 2-4 natural JD-relevant skill sentences. "
+                    "Do not return keyword-only skill items."
+                ),
+            )
+        return draft
 
     def fact_check_resume(
         self,
@@ -166,8 +182,13 @@ class LocalFallbackTailoringClient(TailoringLLMClient):
             if fact_id in facts_by_id and fact_id not in unique_fact_ids:
                 unique_fact_ids.append(fact_id)
 
-        selected_fact_ids = unique_fact_ids[:6] or list(facts_by_id)[:3]
-        sentences = [
+        selected_fact_ids = unique_fact_ids[:6]
+        for fact_id in facts_by_id:
+            if fact_id not in selected_fact_ids:
+                selected_fact_ids.append(fact_id)
+            if len(selected_fact_ids) == 6:
+                break
+        experience = [
             TailoredSentence(
                 section="experience",
                 sentence=facts_by_id[fact_id].fact_text,
@@ -175,16 +196,41 @@ class LocalFallbackTailoringClient(TailoringLLMClient):
             )
             for fact_id in selected_fact_ids
         ]
-
-        summary = sentences[:2]
-        experience = sentences[2:] if len(sentences) > 2 else sentences
+        summary = [
+            TailoredSentence(
+                section="summary",
+                sentence=facts_by_id[fact_id].fact_text,
+                source_fact_ids=[fact_id],
+            )
+            for fact_id in selected_fact_ids[:4]
+        ]
+        skills = []
+        jd_text = jd.model_dump_json().casefold()
+        for skill in candidate_skills(resume):
+            if skill["name"].casefold() not in jd_text:
+                continue
+            evidence_fact_ids = skill["evidence_fact_ids"][:2]
+            if not evidence_fact_ids:
+                continue
+            skills.append(
+                TailoredSentence(
+                    section="skills",
+                    sentence=(
+                        f"{skill['proficiency']}{skill['name']}，"
+                        "能够在相关项目或工作场景中应用。"
+                    ),
+                    source_fact_ids=evidence_fact_ids,
+                )
+            )
+            if len(skills) == 4:
+                break
         return TailoredResumeDraft(
             jd_id=jd.jd_id,
             resume_id=resume.resume_id,
             headline=jd.job_title,
             summary=summary,
             experience=experience,
-            skills=[],
+            skills=skills,
         ).model_dump()
 
     def fact_check_resume(
@@ -424,12 +470,6 @@ def assemble_formal_resume(
         for sentence in revised_draft.skills
         if sentence.sentence.strip()
     ]
-    parsed_skill_text = [
-        skill.name.strip()
-        for skill in resume.skills
-        if skill.name.strip()
-    ]
-
     return FormalResumeDocument(
         name=resume.name,
         headline=revised_draft.headline or jd.job_title,
@@ -458,7 +498,7 @@ def assemble_formal_resume(
             )
             for project in resume.projects
         ],
-        skills=_deduplicate_text(generated_skill_text + parsed_skill_text),
+        skills=_deduplicate_text(generated_skill_text),
     )
 
 
@@ -626,6 +666,34 @@ def collect_resume_facts(resume: ParsedResume) -> list[ExperienceFact]:
     return facts
 
 
+def candidate_skills(resume: ParsedResume) -> list[dict]:
+    facts = collect_resume_facts(resume)
+    valid_fact_ids = {fact.fact_id for fact in facts}
+    candidates = []
+    for skill in resume.skills:
+        evidence_fact_ids = [
+            fact_id
+            for fact_id in skill.evidence_fact_ids
+            if fact_id in valid_fact_ids
+        ]
+        if not evidence_fact_ids:
+            skill_name = skill.name.strip().casefold()
+            evidence_fact_ids = [
+                fact.fact_id
+                for fact in facts
+                if skill_name and skill_name in fact.fact_text.casefold()
+            ]
+        candidates.append(
+            {
+                "name": skill.name,
+                "proficiency": skill.proficiency,
+                "category": skill.category,
+                "evidence_fact_ids": list(dict.fromkeys(evidence_fact_ids)),
+            }
+        )
+    return candidates
+
+
 def fact_index(resume: ParsedResume) -> dict[str, ExperienceFact]:
     return {
         fact.fact_id: fact
@@ -723,6 +791,7 @@ def build_rewrite_prompt(
     match_report: RequirementMatchReport,
 ) -> str:
     facts = [fact.model_dump() for fact in collect_resume_facts(resume)]
+    skills = candidate_skills(resume)
     return f"""
 Rewrite resume content for the target job using only the candidate fact library.
 
@@ -731,6 +800,7 @@ Allowed:
 - Adjust wording.
 - Use job-relevant keywords when they are supported by cited facts.
 - Highlight relevant ability.
+- Add natural grammatical connectors that do not introduce a new factual claim.
 
 Forbidden:
 - Add new technical stacks.
@@ -740,6 +810,27 @@ Forbidden:
 - Invent business outcomes.
 
 Every generated sentence must include source_fact_ids.
+
+Summary requirements:
+- Return 3-4 concise Chinese sentences when at least three relevant facts exist.
+- Each sentence should normally be 25-60 Chinese characters.
+- Express capability plus an application context or supporting experience.
+- Do not output a keyword list and do not merely repeat the skills section.
+- Use different evidence across the summary where possible.
+
+Experience requirements:
+- Write complete, natural statements with an action and object.
+- Include method, technology, scope, or result only when cited facts support it.
+- Do not turn a long source paragraph into a comma-separated keyword list.
+
+Skill requirements:
+- Select only skills relevant to the JD and supported by evidence_fact_ids.
+- Use the stored proficiency exactly; never upgrade it.
+- Return 2-4 concise Chinese skill sentences when relevant supported skills exist.
+- Write natural phrases such as "熟练使用 Unity，熟悉其操作与开发流程",
+  not isolated words such as "Unity / C# / Java".
+- Related skills may be combined only when all claims are supported by the cited
+  source_fact_ids.
 
 Return valid JSON:
 {{
@@ -765,6 +856,9 @@ Match report:
 
 Candidate facts:
 {json.dumps(facts, ensure_ascii=False, indent=2)}
+
+Candidate skills with stored proficiency and evidence:
+{json.dumps(skills, ensure_ascii=False, indent=2)}
 """.strip()
 
 
@@ -774,6 +868,7 @@ def build_fact_check_prompt(
     draft: TailoredResumeDraft,
 ) -> str:
     facts = [fact.model_dump() for fact in collect_resume_facts(resume)]
+    skills = candidate_skills(resume)
     return f"""
 Check each generated resume sentence against only its source_fact_ids.
 
@@ -781,6 +876,10 @@ Output support_status:
 - "supported" when the sentence is fully supported by cited facts.
 - "partially_supported" when the sentence contains wording that is not fully supported.
 - Keep "unsupported" as a possible field value, but prefer "partially_supported" with a concrete issue and suggestion.
+- For a skills sentence, its proficiency wording must not exceed the stored
+  proficiency in Candidate skills, and at least one cited source_fact_id must
+  appear in that skill's evidence_fact_ids.
+- Natural grammatical connectors are allowed when they add no new factual claim.
 
 For partially_supported, explain the exact problem and suggest deletion or a safer rewrite.
 
@@ -803,6 +902,9 @@ Return valid JSON:
 Candidate facts:
 {json.dumps(facts, ensure_ascii=False, indent=2)}
 
+Candidate skills:
+{json.dumps(skills, ensure_ascii=False, indent=2)}
+
 Generated draft:
 {draft.model_dump_json(indent=2)}
 """.strip()
@@ -815,6 +917,7 @@ def build_revision_prompt(
     fact_check_report: FactCheckReport,
 ) -> str:
     facts = [fact.model_dump() for fact in collect_resume_facts(resume)]
+    skills = candidate_skills(resume)
     return f"""
 Revise the resume draft after fact checking.
 
@@ -826,6 +929,10 @@ Rules:
 - Do not add technology, numbers, seniority, proficiency, roles, or outcomes.
 - Do not combine unrelated projects into one claim.
 - Every returned sentence must cite one or more provided source_fact_ids.
+- Preserve 3-4 substantive summary sentences whenever the candidate has enough
+  distinct relevant facts; do not replace the summary with a keyword list.
+- For skills, use only JD-relevant Candidate skills, keep their stored proficiency,
+  and return natural short sentences rather than isolated technology names.
 - Return the complete revised draft as valid JSON.
 
 Return valid JSON:
@@ -850,12 +957,45 @@ Target JD:
 Candidate facts:
 {json.dumps(facts, ensure_ascii=False, indent=2)}
 
+Candidate skills:
+{json.dumps(skills, ensure_ascii=False, indent=2)}
+
 Draft before revision:
 {draft.model_dump_json(indent=2)}
 
 Fact-check report:
 {fact_check_report.model_dump_json(indent=2)}
 """.strip()
+
+
+def _draft_needs_content_retry(draft: dict, resume: ParsedResume) -> bool:
+    summary = draft.get("summary")
+    skills = draft.get("skills")
+    expected_summary_count = min(3, len(collect_resume_facts(resume)))
+    if (
+        not isinstance(summary, list)
+        or len(summary) < expected_summary_count
+        or len(summary) > 4
+    ):
+        return True
+    supported_skill_count = sum(
+        bool(skill["evidence_fact_ids"])
+        for skill in candidate_skills(resume)
+    )
+    if not supported_skill_count:
+        return False
+    expected_skill_count = min(2, supported_skill_count)
+    if (
+        not isinstance(skills, list)
+        or len(skills) < expected_skill_count
+        or len(skills) > 4
+    ):
+        return True
+    return any(
+        not isinstance(item, dict)
+        or len(str(item.get("sentence", "")).strip()) < 8
+        for item in skills
+    )
 
 
 def _deduplicate_text(items: list[str]) -> list[str]:

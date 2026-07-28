@@ -29,10 +29,13 @@ from app.services.tailoring import (
     SUPPORTED,
     TailoringLLMClient,
     assemble_formal_resume,
+    build_rewrite_prompt,
     build_tailored_resume,
+    candidate_skills,
     validate_fact_check_report,
     validate_match_report,
 )
+from app.services.llm_client import build_resume_parse_prompt
 
 
 class AuditedTailoringClient(TailoringLLMClient):
@@ -156,7 +159,14 @@ def sample_resume() -> ParsedResume:
                 end_date="2023",
             )
         ],
-        skills=[Skill(name="Python"), Skill(name="FastAPI")],
+        skills=[
+            Skill(name="Python", proficiency="熟悉"),
+            Skill(
+                name="FastAPI",
+                proficiency="熟练",
+                evidence_fact_ids=["fact_001"],
+            ),
+        ],
         projects=[
             Project(
                 project_id="project_001",
@@ -185,6 +195,54 @@ def sample_resume() -> ParsedResume:
 
 
 class TailoringWorkflowTests(unittest.TestCase):
+    def test_prompts_require_atomic_facts_summaries_and_skill_sentences(self):
+        parse_prompt = build_resume_parse_prompt("使用 FastAPI 开发接口。")
+        rewrite_prompt = build_rewrite_prompt(
+            sample_jd(),
+            sample_resume(),
+            RequirementMatchReport(
+                jd_id="jd_test",
+                resume_id="resume_test",
+            ),
+        )
+
+        self.assertIn("atomic facts", parse_prompt)
+        self.assertIn('"proficiency": "了解 | 熟悉 | 熟练 | 精通"', parse_prompt)
+        self.assertIn("Return 3-4 concise Chinese sentences", rewrite_prompt)
+        self.assertIn("Use the stored proficiency exactly", rewrite_prompt)
+        self.assertIn('"proficiency": "熟练"', rewrite_prompt)
+
+    def test_candidate_skills_keep_proficiency_and_evidence(self):
+        skills = candidate_skills(sample_resume())
+        fastapi = next(skill for skill in skills if skill["name"] == "FastAPI")
+
+        self.assertEqual(fastapi["proficiency"], "熟练")
+        self.assertEqual(fastapi["evidence_fact_ids"], ["fact_001"])
+
+    def test_formal_resume_uses_only_generated_skill_sentences(self):
+        jd = sample_jd()
+        resume = sample_resume()
+        draft = TailoredResumeDraft(
+            jd_id=jd.jd_id,
+            resume_id=resume.resume_id,
+            skills=[
+                TailoredSentence(
+                    section="skills",
+                    sentence="熟练使用 FastAPI，能够完成后端接口开发。",
+                    source_fact_ids=["fact_001"],
+                )
+            ],
+        )
+
+        formal_resume = assemble_formal_resume(jd, resume, draft)
+
+        self.assertEqual(
+            formal_resume.skills,
+            ["熟练使用 FastAPI，能够完成后端接口开发。"],
+        )
+        self.assertNotIn("Python", formal_resume.skills)
+        self.assertNotIn("FastAPI", formal_resume.skills)
+
     def test_build_revises_after_audit_and_checks_again(self):
         client = AuditedTailoringClient()
 

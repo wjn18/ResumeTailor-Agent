@@ -90,7 +90,24 @@ class UserFactParserTests(unittest.TestCase):
                     result.experience_facts[0].source_location,
                     "user_input:profile",
                 )
-                self.assertTrue((Path(temp_dir) / f"{result.resume_id}.json").exists())
+                saved_path = Path(temp_dir) / f"{result.resume_id}.json"
+                self.assertTrue(saved_path.exists())
+                self.assertTrue(
+                    all(skill.proficiency for skill in result.skills)
+                )
+                valid_fact_ids = {
+                    fact.fact_id
+                    for fact in result.experience_facts
+                }
+                self.assertTrue(
+                    all(
+                        set(skill.evidence_fact_ids) <= valid_fact_ids
+                        for skill in result.skills
+                    )
+                )
+                saved_json = saved_path.read_text(encoding="utf-8")
+                self.assertIn('"proficiency"', saved_json)
+                self.assertIn('"evidence_fact_ids"', saved_json)
 
     def test_merges_user_facts_into_existing_resume(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -49,12 +49,15 @@ def _normalize_user_fact_source(
 ) -> ParsedResume:
     token = uuid4().hex[:8]
     fact_number = 1
+    fact_id_mapping: dict[str, str] = {}
 
     def normalize_fact(fact: ExperienceFact) -> ExperienceFact:
         nonlocal fact_number
+        normalized_fact_id = f"fact_user_{token}_{fact_number:03d}"
+        fact_id_mapping[fact.fact_id] = normalized_fact_id
         normalized = fact.model_copy(
             update={
-                "fact_id": f"fact_user_{token}_{fact_number:03d}",
+                "fact_id": normalized_fact_id,
                 "verified": True,
                 "source_location": f"user_input:{source_name}",
             }
@@ -73,13 +76,28 @@ def _normalize_user_fact_source(
             )
         )
 
+    experience_facts = [
+        normalize_fact(fact)
+        for fact in parsed_resume.experience_facts
+    ]
+    skills = [
+        skill.model_copy(
+            update={
+                "evidence_fact_ids": [
+                    fact_id_mapping[fact_id]
+                    for fact_id in skill.evidence_fact_ids
+                    if fact_id in fact_id_mapping
+                ]
+            }
+        )
+        for skill in parsed_resume.skills
+    ]
+
     return parsed_resume.model_copy(
         update={
             "projects": projects,
-            "experience_facts": [
-                normalize_fact(fact)
-                for fact in parsed_resume.experience_facts
-            ],
+            "experience_facts": experience_facts,
+            "skills": skills,
         }
     )
 
@@ -123,12 +141,37 @@ def _deduplicate_models(items: list) -> list:
 
 def _deduplicate_skills(skills: list) -> list:
     unique_skills = []
-    seen = set()
+    indexes = {}
+    proficiency_rank = {"了解": 0, "熟悉": 1, "熟练": 2, "精通": 3}
     for skill in skills:
         key = skill.name.strip().casefold()
-        if key and key not in seen:
-            seen.add(key)
+        if not key:
+            continue
+        if key not in indexes:
+            indexes[key] = len(unique_skills)
             unique_skills.append(skill)
+            continue
+
+        index = indexes[key]
+        existing = unique_skills[index]
+        proficiency = (
+            skill.proficiency
+            if proficiency_rank.get(skill.proficiency, 0)
+            > proficiency_rank.get(existing.proficiency, 0)
+            else existing.proficiency
+        )
+        evidence_fact_ids = list(
+            dict.fromkeys(
+                existing.evidence_fact_ids + skill.evidence_fact_ids
+            )
+        )
+        unique_skills[index] = existing.model_copy(
+            update={
+                "proficiency": proficiency,
+                "category": existing.category or skill.category,
+                "evidence_fact_ids": evidence_fact_ids,
+            }
+        )
     return unique_skills
 
 
