@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from app.schemas.resumes import ExperienceFact, ParsedResume, Skill, SourceDocument
 from app.services.deepseek_client import DeepSeekJSONClient
+from app.services.llm_client import _honor_award_parse_incomplete
 
 
 class UserFactLLMClient(ABC):
@@ -22,13 +23,28 @@ class DeepSeekUserFactParser(DeepSeekJSONClient, UserFactLLMClient):
         user_text: str,
         source_document: SourceDocument,
     ) -> dict:
+        prompt = build_user_fact_parse_prompt(user_text)
         parsed_data = self.request_json(
             system_prompt=(
                 "You are a strict candidate fact parser. Return only valid JSON. "
                 "Extract only claims explicitly stated by the user."
             ),
-            user_prompt=build_user_fact_parse_prompt(user_text),
+            user_prompt=prompt,
         )
+        if _honor_award_parse_incomplete(parsed_data, user_text):
+            parsed_data = self.request_json(
+                system_prompt=(
+                    "You are correcting an incomplete candidate fact parse. "
+                    "Return only valid JSON and do not invent award metadata."
+                ),
+                user_prompt=(
+                    f"{prompt}\n\n"
+                    "The input explicitly states an honor or award. The previous "
+                    "response did not populate honor_awards with award facts. "
+                    "Extract its exact name, issuer, date, and atomic facts. "
+                    "Use null for missing metadata."
+                ),
+            )
         parsed_data["source_document"] = source_document.model_dump()
         return ParsedResume.model_validate(parsed_data).model_dump()
 
@@ -104,8 +120,8 @@ class LocalFallbackUserFactParser(UserFactLLMClient):
 
 def build_user_fact_parse_prompt(user_text: str) -> str:
     return f"""
-Parse the user's self-reported skills, experience, education, and projects into the
-same JSON structure used by a parsed resume.
+Parse the user's self-reported skills, experience, education, projects, and
+honors or awards into the same JSON structure used by a parsed resume.
 
 Rules:
 - Extract only claims explicitly stated in the input.
@@ -114,8 +130,8 @@ Rules:
 - Preserve uncertainty in the fact text instead of strengthening a claim.
 - Split long descriptions into atomic facts. Each fact_text must be a complete,
   natural sentence with one main action or capability, not a keyword list.
-- Every extracted skill, project claim, and experience claim must also appear in
-  experience_facts or project facts with a unique fact_id.
+- Every extracted claim must appear exactly once in the appropriate work,
+  honor_award, project, or top-level fact collection with a unique fact_id.
 - Every skill must contain proficiency using exactly one of 了解, 熟悉, 熟练,
   or 精通, and must cite its supporting evidence_fact_ids.
 - Use an explicitly stated proficiency when present. Otherwise use 了解 for an
@@ -126,6 +142,11 @@ Rules:
 - If the user explicitly states employment information, put it in work_experiences
   with the exact company, job title, start date, and end date. Use null for
   employment metadata that the user did not state.
+- If the user explicitly states an honor, award, scholarship, or competition
+  prize, put it in honor_awards with the exact name, issuer, and date. Use null
+  for award metadata that the user did not state.
+- Award facts must stay under their honor_award and must not be duplicated in
+  experience_facts.
 - Return empty arrays for sections that are not stated.
 
 Return valid JSON matching this shape:
@@ -164,6 +185,24 @@ Return valid JSON matching this shape:
           "category": "work",
           "entity_name": "company name",
           "fact_text": "string",
+          "verified": true,
+          "source_location": "user_input"
+        }}
+      ]
+    }}
+  ],
+  "honor_awards": [
+    {{
+      "honor_award_id": "string",
+      "name": "exact award or honor name",
+      "issuer": "string or null",
+      "date": "string or null",
+      "facts": [
+        {{
+          "fact_id": "string",
+          "category": "honor_award",
+          "entity_name": "award name",
+          "fact_text": "complete factual sentence",
           "verified": true,
           "source_location": "user_input"
         }}

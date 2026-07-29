@@ -2,6 +2,7 @@ from uuid import uuid4
 
 from app.schemas.resumes import (
     ExperienceFact,
+    HonorAward,
     ParsedResume,
     Project,
     SourceDocument,
@@ -90,6 +91,25 @@ def _normalize_user_fact_source(
             )
         )
 
+    honor_awards = []
+    for honor_number, honor_award in enumerate(
+        parsed_resume.honor_awards,
+        start=1,
+    ):
+        honor_awards.append(
+            honor_award.model_copy(
+                update={
+                    "honor_award_id": (
+                        f"honor_user_{token}_{honor_number:03d}"
+                    ),
+                    "facts": [
+                        normalize_fact(fact)
+                        for fact in honor_award.facts
+                    ],
+                }
+            )
+        )
+
     projects = []
     for project_number, project in enumerate(parsed_resume.projects, start=1):
         projects.append(
@@ -121,6 +141,7 @@ def _normalize_user_fact_source(
     return parsed_resume.model_copy(
         update={
             "work_experiences": work_experiences,
+            "honor_awards": honor_awards,
             "projects": projects,
             "experience_facts": experience_facts,
             "skills": skills,
@@ -146,6 +167,10 @@ def _merge_user_facts(
             "work_experiences": _merge_work_experiences(
                 existing_resume.work_experiences,
                 user_facts.work_experiences,
+            ),
+            "honor_awards": _merge_honor_awards(
+                existing_resume.honor_awards,
+                user_facts.honor_awards,
             ),
             "projects": _merge_projects(
                 existing_resume.projects,
@@ -240,6 +265,43 @@ def _work_identity(item: WorkExperience) -> tuple[str, str]:
     return (
         item.company.strip().casefold(),
         (item.job_title or "").strip().casefold(),
+    )
+
+
+def _merge_honor_awards(
+    existing_items: list[HonorAward],
+    new_items: list[HonorAward],
+) -> list[HonorAward]:
+    merged_items = list(existing_items)
+    indexes = {
+        _honor_identity(item): index
+        for index, item in enumerate(merged_items)
+    }
+
+    for item in new_items:
+        identity = _honor_identity(item)
+        existing_index = indexes.get(identity)
+        if existing_index is None:
+            indexes[identity] = len(merged_items)
+            merged_items.append(item)
+            continue
+
+        existing = merged_items[existing_index]
+        merged_items[existing_index] = existing.model_copy(
+            update={
+                "issuer": existing.issuer or item.issuer,
+                "date": existing.date or item.date,
+                "facts": _deduplicate_facts(existing.facts + item.facts),
+            }
+        )
+
+    return merged_items
+
+
+def _honor_identity(item: HonorAward) -> tuple[str, str]:
+    return (
+        item.name.strip().casefold(),
+        (item.issuer or "").strip().casefold(),
     )
 
 

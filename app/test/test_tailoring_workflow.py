@@ -11,6 +11,7 @@ from app.schemas.jds import JDRequirement, ParsedJD
 from app.schemas.resumes import (
     Education,
     ExperienceFact,
+    HonorAward,
     ParsedResume,
     Project,
     Skill,
@@ -21,6 +22,7 @@ from app.schemas.tailoring import (
     FormalResumeUpdateRequest,
     RequirementMatchReport,
     TailoredResumeDraft,
+    TailoredHonorAward,
     TailoredSentence,
     TailoredWorkExperience,
 )
@@ -40,6 +42,7 @@ from app.services.tailoring import (
     validate_tailored_resume_draft,
 )
 from app.services.llm_client import (
+    _honor_award_parse_incomplete,
     _work_experience_parse_incomplete,
     build_resume_parse_prompt,
 )
@@ -89,6 +92,18 @@ class AuditedTailoringClient(TailoringLLMClient):
                     ],
                 }
             ],
+            "honor_awards": [
+                {
+                    "honor_award_id": "honor_001",
+                    "bullets": [
+                        {
+                            "section": "honor_award",
+                            "sentence": "获得校级优秀毕业设计。",
+                            "source_fact_ids": ["fact_honor_001"],
+                        }
+                    ],
+                }
+            ],
             "skills": [],
         }
 
@@ -110,6 +125,18 @@ class AuditedTailoringClient(TailoringLLMClient):
         ]
         for work_experience in draft.work_experiences:
             for bullet in work_experience.bullets:
+                checks.append(
+                    {
+                        "section": bullet.section,
+                        "sentence": bullet.sentence,
+                        "source_fact_ids": bullet.source_fact_ids,
+                        "support_status": SUPPORTED,
+                        "issue": None,
+                        "suggestion": None,
+                    }
+                )
+        for honor_award in draft.honor_awards:
+            for bullet in honor_award.bullets:
                 checks.append(
                     {
                         "section": bullet.section,
@@ -142,6 +169,10 @@ class AuditedTailoringClient(TailoringLLMClient):
             "work_experiences": [
                 item.model_dump()
                 for item in draft.work_experiences
+            ],
+            "honor_awards": [
+                item.model_dump()
+                for item in draft.honor_awards
             ],
             "skills": [],
         }
@@ -218,6 +249,22 @@ def sample_resume() -> ParsedResume:
                 ],
             )
         ],
+        honor_awards=[
+            HonorAward(
+                honor_award_id="honor_001",
+                name="优秀毕业设计",
+                issuer="示例大学",
+                date="2023.06",
+                facts=[
+                    ExperienceFact(
+                        fact_id="fact_honor_001",
+                        category="honor_award",
+                        entity_name="优秀毕业设计",
+                        fact_text="获得校级优秀毕业设计。",
+                    )
+                ],
+            )
+        ],
         projects=[
             Project(
                 project_id="project_001",
@@ -253,7 +300,9 @@ class TailoringWorkflowTests(unittest.TestCase):
         self.assertIn('"proficiency": "了解 | 熟悉 | 熟练 | 精通"', parse_prompt)
         self.assertIn("Return 3-6 concise Chinese bullet sentences", rewrite_prompt)
         self.assertIn("work_experience_id", parse_prompt)
+        self.assertIn("honor_award_id", parse_prompt)
         self.assertIn("Never invent or rewrite company", rewrite_prompt)
+        self.assertIn("Never invent or rewrite the award name", rewrite_prompt)
         self.assertIn("Use the stored proficiency exactly", rewrite_prompt)
         self.assertIn('"proficiency": "熟练"', rewrite_prompt)
 
@@ -285,6 +334,28 @@ class TailoringWorkflowTests(unittest.TestCase):
             )
         )
 
+    def test_honor_section_triggers_structured_parse_retry_check(self):
+        self.assertTrue(
+            _honor_award_parse_incomplete(
+                {"honor_awards": []},
+                "荣誉奖项\n校级优秀毕业设计",
+            )
+        )
+        self.assertFalse(
+            _honor_award_parse_incomplete(
+                {
+                    "honor_awards": [
+                        {
+                            "name": "优秀毕业设计",
+                            "honor_award_id": "honor_001",
+                            "facts": [{"fact_id": "fact_honor_001"}],
+                        }
+                    ]
+                },
+                "荣誉奖项\n校级优秀毕业设计",
+            )
+        )
+
     def test_work_bullet_cannot_cite_a_project_fact(self):
         draft = TailoredResumeDraft(
             jd_id="jd_test",
@@ -295,6 +366,31 @@ class TailoringWorkflowTests(unittest.TestCase):
                     bullets=[
                         TailoredSentence(
                             section="work_experience",
+                            sentence="实现简历解析与存储流程。",
+                            source_fact_ids=["fact_project_001"],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        with self.assertRaisesRegex(ValueError, "valid source_fact_id"):
+            validate_tailored_resume_draft(
+                draft,
+                sample_jd(),
+                sample_resume(),
+            )
+
+    def test_honor_bullet_cannot_cite_a_project_fact(self):
+        draft = TailoredResumeDraft(
+            jd_id="jd_test",
+            resume_id="resume_test",
+            honor_awards=[
+                TailoredHonorAward(
+                    honor_award_id="honor_001",
+                    bullets=[
+                        TailoredSentence(
+                            section="honor_award",
                             sentence="实现简历解析与存储流程。",
                             source_fact_ids=["fact_project_001"],
                         )
@@ -414,6 +510,37 @@ class TailoringWorkflowTests(unittest.TestCase):
         self.assertEqual(work.start_date, "2023.06")
         self.assertEqual(work.end_date, "2025.06")
         self.assertEqual(work.bullets, ["负责后端服务开发。"])
+
+    def test_formal_honor_award_preserves_parsed_metadata(self):
+        resume = sample_resume()
+        draft = TailoredResumeDraft(
+            jd_id="jd_test",
+            resume_id=resume.resume_id,
+            honor_awards=[
+                TailoredHonorAward(
+                    honor_award_id="honor_001",
+                    bullets=[
+                        TailoredSentence(
+                            section="honor_award",
+                            sentence="毕业设计获评校级优秀。",
+                            source_fact_ids=["fact_honor_001"],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        formal_resume = assemble_formal_resume(
+            sample_jd(),
+            resume,
+            draft,
+        )
+
+        honor = formal_resume.honor_awards[0]
+        self.assertEqual(honor.name, "优秀毕业设计")
+        self.assertEqual(honor.issuer, "示例大学")
+        self.assertEqual(honor.date, "2023.06")
+        self.assertEqual(honor.bullets, ["毕业设计获评校级优秀。"])
 
     def test_build_revises_after_audit_and_checks_again(self):
         client = AuditedTailoringClient()
@@ -589,9 +716,19 @@ class TailoringWorkflowTests(unittest.TestCase):
                 self.assertIn("工作经历", document_text)
                 self.assertIn("示例科技", document_text)
                 self.assertIn("简历生成系统", document_text)
+                self.assertIn("荣誉奖项", document_text)
+                self.assertIn("优秀毕业设计", document_text)
                 self.assertLess(
                     document_text.index("工作经历"),
                     document_text.index("项目经历"),
+                )
+                self.assertLess(
+                    document_text.index("项目经历"),
+                    document_text.index("荣誉奖项"),
+                )
+                self.assertLess(
+                    document_text.index("荣誉奖项"),
+                    document_text.index("教育背景"),
                 )
 
     def test_docx_input_is_supported_and_readable(self):

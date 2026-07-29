@@ -39,18 +39,38 @@ class DeepSeekResumeParser(DeepSeekJSONClient, ResumeLLMClient):
             ),
             user_prompt=prompt,
         )
-        if _work_experience_parse_incomplete(parsed_data, resume_text):
+        missing_work = _work_experience_parse_incomplete(
+            parsed_data,
+            resume_text,
+        )
+        missing_honors = _honor_award_parse_incomplete(
+            parsed_data,
+            resume_text,
+        )
+        if missing_work or missing_honors:
+            correction_requirements = []
+            if missing_work:
+                correction_requirements.append(
+                    "The resume contains an explicit work or internship section. "
+                    "Extract each employment item into work_experiences with its "
+                    "exact company, job title, dates, and atomic facts."
+                )
+            if missing_honors:
+                correction_requirements.append(
+                    "The resume contains an explicit honors or awards section. "
+                    "Extract each award into honor_awards with its exact name, "
+                    "issuer, date, and atomic facts."
+                )
             parsed_data = self.request_json(
                 system_prompt=(
                     "You are correcting an incomplete structured resume parse. "
-                    "Return only valid JSON and do not invent employment metadata."
+                    "Return only valid JSON and do not invent metadata."
                 ),
                 user_prompt=(
                     f"{prompt}\n\n"
-                    "The resume contains an explicit work or internship section. "
-                    "The previous response did not populate work_experiences. "
-                    "Extract each employment item with its exact company, job title, "
-                    "dates, and atomic facts. Use null for missing metadata."
+                    "The previous response omitted a required structured section. "
+                    + " ".join(correction_requirements)
+                    + " Use null for missing metadata."
                 ),
             )
         parsed_data["source_document"] = source_document.model_dump()
@@ -139,10 +159,16 @@ Fact extraction rules:
 - Preserve the action, object, context, method/technology, and result when they
   are explicitly present. Never invent a result or metric.
 - Prefer 3-6 atomic facts for a detailed project instead of one oversized fact.
-- Keep every fact_id unique across experience_facts, work facts, and project facts.
+- Keep every fact_id unique across experience_facts, work facts, award facts,
+  and project facts.
 - Put employment content in work_experiences. Extract company, job title, start
   date, and end date exactly as written; use null when a field is not stated.
 - Work facts must stay under their work_experience and must not be duplicated in
+  the top-level experience_facts array.
+- Put explicitly stated honors, awards, scholarships, and competition prizes in
+  honor_awards. Preserve the exact award name, issuer, and date; use null when
+  issuer or date is not stated.
+- Award facts must stay under their honor_award and must not be duplicated in
   the top-level experience_facts array.
 
 Skill rules:
@@ -192,6 +218,24 @@ Return valid JSON matching this shape:
           "fact_text": "string",
           "verified": true,
           "source_location": "work experience"
+        }}
+      ]
+    }}
+  ],
+  "honor_awards": [
+    {{
+      "honor_award_id": "string",
+      "name": "exact award or honor name",
+      "issuer": "string or null",
+      "date": "string or null",
+      "facts": [
+        {{
+          "fact_id": "string",
+          "category": "honor_award",
+          "entity_name": "award name",
+          "fact_text": "complete factual sentence",
+          "verified": true,
+          "source_location": "honors and awards"
         }}
       ]
     }}
@@ -254,6 +298,38 @@ def _work_experience_parse_incomplete(
             not isinstance(item, dict)
             or not str(item.get("company", "")).strip()
             for item in work_experiences
+        )
+    )
+
+
+def _honor_award_parse_incomplete(
+    parsed_data: dict,
+    resume_text: str,
+) -> bool:
+    has_honor_section = bool(
+        re.search(
+            (
+                r"荣誉奖项|荣誉奖励|获奖经历|奖项荣誉|获奖情况|"
+                r"(?:获得|荣获|获评|入选).{0,30}(?:奖|荣誉|称号)|"
+                r"(?:一|二|三|特等)等奖|奖学金|"
+                r"honou?rs?(?:\s*(?:&|and)\s*awards?)?|awards?"
+            ),
+            resume_text,
+            re.IGNORECASE,
+        )
+    )
+    if not has_honor_section:
+        return False
+    honor_awards = parsed_data.get("honor_awards")
+    return (
+        not isinstance(honor_awards, list)
+        or not honor_awards
+        or any(
+            not isinstance(item, dict)
+            or not str(item.get("name", "")).strip()
+            or not isinstance(item.get("facts"), list)
+            or not item.get("facts")
+            for item in honor_awards
         )
     )
 

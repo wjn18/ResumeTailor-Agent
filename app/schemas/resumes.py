@@ -61,6 +61,14 @@ class WorkExperience(BaseModel):
     facts: list[ExperienceFact] = Field(default_factory=list)
 
 
+class HonorAward(BaseModel):
+    honor_award_id: str
+    name: str
+    issuer: Optional[str] = None
+    date: Optional[str] = None
+    facts: list[ExperienceFact] = Field(default_factory=list)
+
+
 class Project(BaseModel):
     project_id: str
     name: str
@@ -81,6 +89,7 @@ class ParsedResume(BaseModel):
     skills: list[Skill] = Field(default_factory=list)
     work_experiences: list[WorkExperience] = Field(default_factory=list)
     projects: list[Project] = Field(default_factory=list)
+    honor_awards: list[HonorAward] = Field(default_factory=list)
     experience_facts: list[ExperienceFact] = Field(default_factory=list)
 
 

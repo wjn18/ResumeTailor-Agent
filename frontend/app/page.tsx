@@ -26,6 +26,7 @@ import {
 } from "@/lib/api";
 import type {
   FormalEducation,
+  FormalHonorAward,
   FormalProject,
   FormalResume,
   FormalWorkExperience,
@@ -55,6 +56,13 @@ const emptyWorkExperience = (): FormalWorkExperience => ({
   job_title: null,
   start_date: null,
   end_date: null,
+  bullets: [""],
+});
+
+const emptyHonorAward = (): FormalHonorAward => ({
+  name: "",
+  issuer: null,
+  date: null,
   bullets: [""],
 });
 
@@ -572,6 +580,86 @@ function ResumeEditor({
             <AddButton
               label="添加项目"
               onClick={() => update("projects", [...resume.projects, emptyProject()])}
+            />
+          )}
+        </ResumeSection>
+      )}
+
+      {(resume.honor_awards.length > 0 || editable) && (
+        <ResumeSection title="荣誉奖项">
+          {resume.honor_awards.map((honorAward, index) => (
+            <div className="resume-entry" key={`honor-${index}`}>
+              <div className="entry-heading">
+                <EditableField
+                  value={honorAward.name}
+                  onChange={(value) => {
+                    const items = [...resume.honor_awards];
+                    items[index] = {...honorAward, name: value};
+                    update("honor_awards", items);
+                  }}
+                  editable={editable}
+                  className="entry-title"
+                  placeholder="奖项名称"
+                />
+                {editable && (
+                  <IconButton
+                    label="删除荣誉奖项"
+                    onClick={() =>
+                      update(
+                        "honor_awards",
+                        resume.honor_awards.filter(
+                          (_, itemIndex) => itemIndex !== index,
+                        ),
+                      )
+                    }
+                  >
+                    <Trash2 size={16} />
+                  </IconButton>
+                )}
+              </div>
+              <div className="entry-meta">
+                <EditableField
+                  value={honorAward.issuer ?? ""}
+                  onChange={(value) => {
+                    const items = [...resume.honor_awards];
+                    items[index] = {...honorAward, issuer: value};
+                    update("honor_awards", items);
+                  }}
+                  editable={editable}
+                  placeholder="颁发方"
+                />
+                <span>·</span>
+                <EditableField
+                  value={honorAward.date ?? ""}
+                  onChange={(value) => {
+                    const items = [...resume.honor_awards];
+                    items[index] = {...honorAward, date: value};
+                    update("honor_awards", items);
+                  }}
+                  editable={editable}
+                  placeholder="获奖时间"
+                />
+              </div>
+              <EditableList
+                items={honorAward.bullets}
+                editable={editable}
+                onChange={(bullets) => {
+                  const items = [...resume.honor_awards];
+                  items[index] = {...honorAward, bullets};
+                  update("honor_awards", items);
+                }}
+              />
+            </div>
+          ))}
+          {editable && (
+            <AddButton
+              label="添加荣誉奖项"
+              onClick={() =>
+                update(
+                  "honor_awards",
+                  [...resume.honor_awards, emptyHonorAward()],
+                )
+              }
             />
           )}
         </ResumeSection>

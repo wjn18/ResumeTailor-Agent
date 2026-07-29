@@ -8,12 +8,14 @@ from app.schemas.resumes import ExperienceFact, ParsedResume
 from app.schemas.tailoring import (
     FactCheckReport,
     FormalEducation,
+    FormalHonorAward,
     FormalProject,
     FormalResumeDocument,
     FormalWorkExperience,
     RequirementMatch,
     RequirementMatchReport,
     SentenceFactCheck,
+    TailoredHonorAward,
     TailoredResumeDraft,
     TailoredSentence,
     TailoredWorkExperience,
@@ -96,8 +98,8 @@ class DeepSeekTailoringClient(DeepSeekJSONClient, TailoringLLMClient):
                     f"{prompt}\n\n"
                     "The previous response did not meet the content requirements. "
                     "Return up to 6 ranked personal advantages, include every structured "
-                    "work experience, and put only remaining supported technical "
-                    "capabilities in related skills."
+                    "work experience and honor award, and put only remaining supported "
+                    "technical capabilities in related skills."
                 ),
             )
         return draft
@@ -212,6 +214,20 @@ class LocalFallbackTailoringClient(TailoringLLMClient):
             )
             for item in resume.work_experiences
         ]
+        honor_awards = [
+            TailoredHonorAward(
+                honor_award_id=item.honor_award_id,
+                bullets=[
+                    TailoredSentence(
+                        section="honor_award",
+                        sentence=fact.fact_text,
+                        source_fact_ids=[fact.fact_id],
+                    )
+                    for fact in item.facts
+                ],
+            )
+            for item in resume.honor_awards
+        ]
         advantage_fact_ids = {
             fact_id
             for sentence in summary
@@ -246,6 +262,7 @@ class LocalFallbackTailoringClient(TailoringLLMClient):
             headline=jd.job_title,
             summary=summary,
             work_experiences=work_experiences,
+            honor_awards=honor_awards,
             skills=skills,
         ).model_dump()
 
@@ -349,6 +366,13 @@ class LocalFallbackTailoringClient(TailoringLLMClient):
                     bullets=revise_section(item.bullets),
                 )
                 for item in draft.work_experiences
+            ],
+            honor_awards=[
+                TailoredHonorAward(
+                    honor_award_id=item.honor_award_id,
+                    bullets=revise_section(item.bullets),
+                )
+                for item in draft.honor_awards
             ],
             experience=revise_section(draft.experience),
             skills=revise_section(draft.skills),
@@ -539,6 +563,45 @@ def assemble_formal_resume(
             )
         )
 
+    honor_awards_by_id = {
+        item.honor_award_id: item
+        for item in resume.honor_awards
+    }
+    tailored_honor_awards = revised_draft.honor_awards
+    if not tailored_honor_awards:
+        tailored_honor_awards = [
+            TailoredHonorAward(
+                honor_award_id=item.honor_award_id,
+                bullets=[
+                    TailoredSentence(
+                        section="honor_award",
+                        sentence=fact.fact_text,
+                        source_fact_ids=[fact.fact_id],
+                    )
+                    for fact in item.facts[:4]
+                ],
+            )
+            for item in resume.honor_awards
+        ]
+    formal_honor_awards = []
+    for tailored_honor in tailored_honor_awards:
+        source_honor = honor_awards_by_id.get(
+            tailored_honor.honor_award_id
+        )
+        if source_honor is None:
+            continue
+        formal_honor_awards.append(
+            FormalHonorAward(
+                name=source_honor.name,
+                issuer=source_honor.issuer,
+                date=source_honor.date,
+                bullets=[
+                    sentence.sentence
+                    for sentence in tailored_honor.bullets
+                ],
+            )
+        )
+
     return FormalResumeDocument(
         name=resume.name,
         headline=revised_draft.headline or jd.job_title,
@@ -549,6 +612,7 @@ def assemble_formal_resume(
             for sentence in revised_draft.summary
         ],
         work_experiences=formal_work_experiences,
+        honor_awards=formal_honor_awards,
         related_skills=_deduplicate_text(generated_skill_text),
         summary=[],
         experience=[],
@@ -718,6 +782,56 @@ def validate_tailored_resume_draft(
             )
         )
 
+    valid_honor_awards = {
+        item.honor_award_id: item
+        for item in resume.honor_awards
+    }
+    tailored_honor_awards = []
+    seen_honor_ids = set()
+    for item in draft.honor_awards:
+        if (
+            item.honor_award_id not in valid_honor_awards
+            or item.honor_award_id in seen_honor_ids
+        ):
+            continue
+        seen_honor_ids.add(item.honor_award_id)
+        honor_fact_ids = {
+            fact.fact_id
+            for fact in valid_honor_awards[
+                item.honor_award_id
+            ].facts
+        }
+        tailored_honor_awards.append(
+            TailoredHonorAward(
+                honor_award_id=item.honor_award_id,
+                bullets=[
+                    validate_sentence(
+                        sentence,
+                        "honor_award",
+                        honor_fact_ids,
+                    )
+                    for sentence in item.bullets[:4]
+                ],
+            )
+        )
+
+    for honor_id, honor_award in valid_honor_awards.items():
+        if honor_id in seen_honor_ids:
+            continue
+        tailored_honor_awards.append(
+            TailoredHonorAward(
+                honor_award_id=honor_id,
+                bullets=[
+                    TailoredSentence(
+                        section="honor_award",
+                        sentence=fact.fact_text,
+                        source_fact_ids=[fact.fact_id],
+                    )
+                    for fact in honor_award.facts[:4]
+                ],
+            )
+        )
+
     return TailoredResumeDraft(
         jd_id=jd.jd_id,
         resume_id=resume.resume_id,
@@ -727,6 +841,7 @@ def validate_tailored_resume_draft(
             for sentence in draft.summary[:6]
         ],
         work_experiences=tailored_work_experiences,
+        honor_awards=tailored_honor_awards,
         experience=[
             validate_sentence(sentence, "work_experience")
             for sentence in draft.experience
@@ -865,6 +980,8 @@ def collect_resume_facts(resume: ParsedResume) -> list[ExperienceFact]:
     facts = list(resume.experience_facts)
     for work_experience in resume.work_experiences:
         facts.extend(work_experience.facts)
+    for honor_award in resume.honor_awards:
+        facts.extend(honor_award.facts)
     for project in resume.projects:
         facts.extend(project.facts)
     unique_facts = []
@@ -956,6 +1073,8 @@ def iter_tailored_sentences(draft: TailoredResumeDraft) -> Iterable[TailoredSent
     yield from draft.summary
     for work_experience in draft.work_experiences:
         yield from work_experience.bullets
+    for honor_award in draft.honor_awards:
+        yield from honor_award.bullets
     yield from draft.experience
     yield from draft.skills
 
@@ -1016,6 +1135,16 @@ def build_rewrite_prompt(
         }
         for item in resume.work_experiences
     ]
+    honor_awards = [
+        {
+            "honor_award_id": item.honor_award_id,
+            "name": item.name,
+            "issuer": item.issuer,
+            "date": item.date,
+            "fact_ids": [fact.fact_id for fact in item.facts],
+        }
+        for item in resume.honor_awards
+    ]
     return f"""
 Rewrite resume content for the target job using only the candidate fact library.
 
@@ -1053,6 +1182,13 @@ Work experience requirements:
 - Write complete statements with an action and object. Add method, technology,
   scope, or result only when cited facts support it.
 
+Honor and award requirements:
+- Include every item from Structured honor awards, preserving its
+  honor_award_id. Never invent or rewrite the award name, issuer, or date.
+- Return only concise factual description bullets under each honor_award_id.
+- Every bullet must cite only fact_ids belonging to that honor award.
+- Do not inflate the award level, ranking, scope, selection rate, or result.
+
 Related skill requirements:
 - Select only skills relevant to the JD and supported by evidence_fact_ids.
 - Use the stored proficiency exactly; never upgrade it.
@@ -1078,6 +1214,14 @@ Return valid JSON:
       ]
     }}
   ],
+  "honor_awards": [
+    {{
+      "honor_award_id": "existing honor_award_id",
+      "bullets": [
+        {{"section": "honor_award", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+      ]
+    }}
+  ],
   "skills": [
     {{"section": "related_skills", "sentence": "string", "source_fact_ids": ["fact_id"]}}
   ]
@@ -1094,6 +1238,9 @@ Candidate facts:
 
 Structured work experiences:
 {json.dumps(work_experiences, ensure_ascii=False, indent=2)}
+
+Structured honor awards:
+{json.dumps(honor_awards, ensure_ascii=False, indent=2)}
 
 Candidate skills with stored proficiency and evidence:
 {json.dumps(skills, ensure_ascii=False, indent=2)}
@@ -1170,6 +1317,8 @@ Rules:
 - Preserve 3-6 ranked personal advantages when enough distinct relevant facts
   exist. Each advantage should state a capability and its supporting experience.
 - Preserve every valid work_experience_id and revise only its content bullets.
+- Preserve every valid honor_award_id and revise only its description bullets.
+  Never change the award name, issuer, date, level, or ranking.
 - For related skills, use only JD-relevant Candidate skills not already covered
   by personal advantages and keep their stored proficiency.
 - Return the complete revised draft as valid JSON.
@@ -1187,6 +1336,14 @@ Return valid JSON:
       "work_experience_id": "existing work_experience_id",
       "bullets": [
         {{"section": "work_experience", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+      ]
+    }}
+  ],
+  "honor_awards": [
+    {{
+      "honor_award_id": "existing honor_award_id",
+      "bullets": [
+        {{"section": "honor_award", "sentence": "string", "source_fact_ids": ["fact_id"]}}
       ]
     }}
   ],
@@ -1215,6 +1372,7 @@ Fact-check report:
 def _draft_needs_content_retry(draft: dict, resume: ParsedResume) -> bool:
     summary = draft.get("summary")
     work_experiences = draft.get("work_experiences")
+    honor_awards = draft.get("honor_awards")
     skills = draft.get("skills")
     expected_summary_count = min(3, len(collect_resume_facts(resume)))
     if (
@@ -1226,6 +1384,11 @@ def _draft_needs_content_retry(draft: dict, resume: ParsedResume) -> bool:
     if resume.work_experiences and (
         not isinstance(work_experiences, list)
         or len(work_experiences) != len(resume.work_experiences)
+    ):
+        return True
+    if resume.honor_awards and (
+        not isinstance(honor_awards, list)
+        or len(honor_awards) != len(resume.honor_awards)
     ):
         return True
     if (

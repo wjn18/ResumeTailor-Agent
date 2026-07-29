@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.schemas.resumes import (
     ExperienceFact,
+    HonorAward,
     ParsedResume,
     Project,
     SourceDocument,
@@ -61,6 +62,30 @@ class WorkFactParser(UserFactLLMClient):
                             fact_id="fact_from_model",
                             category="work",
                             entity_name="示例科技",
+                            fact_text=user_text,
+                        )
+                    ],
+                )
+            ],
+        ).model_dump()
+
+
+class HonorFactParser(UserFactLLMClient):
+    def parse_user_facts(self, user_text, source_document):
+        return ParsedResume(
+            resume_id="resume_from_model",
+            source_document=source_document,
+            honor_awards=[
+                HonorAward(
+                    honor_award_id="honor_from_model",
+                    name="优秀毕业设计",
+                    issuer="示例大学",
+                    date="2023.06",
+                    facts=[
+                        ExperienceFact(
+                            fact_id="fact_from_model",
+                            category="honor_award",
+                            entity_name="优秀毕业设计",
                             fact_text=user_text,
                         )
                     ],
@@ -239,6 +264,35 @@ class UserFactParserTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     work.facts[0].source_location,
+                    "user_input:user_input",
+                )
+
+    def test_normalizes_and_merges_user_honor_award(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            existing = ParsedResume(resume_id="resume_existing")
+
+            with patch("app.services.resume_parser.RESUME_DATA_DIR", data_dir):
+                from app.services.resume_parser import save_parsed_resume
+
+                save_parsed_resume(existing)
+                result = parse_user_fact_text_to_json(
+                    "毕业设计获评校级优秀。",
+                    resume_id=existing.resume_id,
+                    parser_client=HonorFactParser(),
+                )
+
+                honor = result.honor_awards[0]
+                self.assertEqual(honor.name, "优秀毕业设计")
+                self.assertEqual(honor.issuer, "示例大学")
+                self.assertTrue(
+                    honor.honor_award_id.startswith("honor_user_")
+                )
+                self.assertTrue(
+                    honor.facts[0].fact_id.startswith("fact_user_")
+                )
+                self.assertEqual(
+                    honor.facts[0].source_location,
                     "user_input:user_input",
                 )
 

@@ -30,12 +30,18 @@ class TailoredWorkExperience(BaseModel):
     bullets: list[TailoredSentence] = Field(default_factory=list)
 
 
+class TailoredHonorAward(BaseModel):
+    honor_award_id: str
+    bullets: list[TailoredSentence] = Field(default_factory=list)
+
+
 class TailoredResumeDraft(BaseModel):
     jd_id: str
     resume_id: str
     headline: Optional[str] = None
     summary: list[TailoredSentence] = Field(default_factory=list)
     work_experiences: list[TailoredWorkExperience] = Field(default_factory=list)
+    honor_awards: list[TailoredHonorAward] = Field(default_factory=list)
     # Kept for historical draft JSON compatibility.
     experience: list[TailoredSentence] = Field(default_factory=list)
     skills: list[TailoredSentence] = Field(default_factory=list)
@@ -81,6 +87,13 @@ class FormalWorkExperience(BaseModel):
     bullets: list[str] = Field(default_factory=list)
 
 
+class FormalHonorAward(BaseModel):
+    name: str
+    issuer: Optional[str] = None
+    date: Optional[str] = None
+    bullets: list[str] = Field(default_factory=list)
+
+
 class FormalResumeDocument(BaseModel):
     name: Optional[str] = None
     headline: Optional[str] = None
@@ -88,6 +101,7 @@ class FormalResumeDocument(BaseModel):
     phone: Optional[str] = None
     advantages: list[str] = Field(default_factory=list, max_length=6)
     work_experiences: list[FormalWorkExperience] = Field(default_factory=list)
+    honor_awards: list[FormalHonorAward] = Field(default_factory=list)
     related_skills: list[str] = Field(default_factory=list)
     # Kept so previously generated JSON files remain readable.
     summary: list[str] = Field(default_factory=list)

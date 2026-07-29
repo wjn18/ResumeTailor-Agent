@@ -33,6 +33,13 @@ export type FormalWorkExperience = {
   bullets: string[];
 };
 
+export type FormalHonorAward = {
+  name: string;
+  issuer: string | null;
+  date: string | null;
+  bullets: string[];
+};
+
 export type FormalResume = {
   name: string | null;
   headline: string | null;
@@ -40,6 +47,7 @@ export type FormalResume = {
   phone: string | null;
   advantages: string[];
   work_experiences: FormalWorkExperience[];
+  honor_awards: FormalHonorAward[];
   related_skills: string[];
   // Historical response fields.
   summary: string[];

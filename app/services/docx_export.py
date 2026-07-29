@@ -186,6 +186,24 @@ def _add_resume_content(
             for bullet in project.bullets:
                 _add_bullet(document, bullet)
 
+    if resume.honor_awards:
+        document.add_heading("荣誉奖项", level=1)
+        for honor_award in resume.honor_awards:
+            heading = document.add_paragraph()
+            heading.paragraph_format.space_before = Pt(3)
+            heading.paragraph_format.space_after = Pt(2)
+            heading.paragraph_format.keep_with_next = True
+            name = heading.add_run(honor_award.name)
+            _set_run_font(name, size=10.5, color=INK, bold=True)
+
+            metadata = _honor_metadata(honor_award)
+            if metadata:
+                meta_run = heading.add_run(f"  |  {metadata}")
+                _set_run_font(meta_run, size=9, color=MUTED)
+
+            for bullet in honor_award.bullets:
+                _add_bullet(document, bullet)
+
     if resume.education:
         document.add_heading("教育背景", level=1)
         for education in resume.education:
@@ -268,6 +286,14 @@ def _work_metadata(work_experience) -> str:
     if dates:
         values.append(dates)
     return "  |  ".join(values)
+
+
+def _honor_metadata(honor_award) -> str:
+    return "  |  ".join(
+        value.strip()
+        for value in (honor_award.issuer, honor_award.date)
+        if value and value.strip()
+    )
 
 
 def _date_range(start_date: str | None, end_date: str | None) -> str:
