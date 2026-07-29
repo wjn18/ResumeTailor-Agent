@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: resume-tailor-api
+    runtime: python
+    plan: free
+    region: frankfurt
+    branch: FastAPI
+    buildCommand: uv sync --frozen
+    startCommand: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DEEPSEEK_MODEL
+        value: deepseek-v4-flash
+      - key: DEEPSEEK_API_URL
+        value: https://api.deepseek.com/chat/completions
+      - key: DEEPSEEK_MAX_TOKENS
+        value: "8192"
