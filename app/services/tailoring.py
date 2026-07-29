@@ -98,8 +98,9 @@ class DeepSeekTailoringClient(DeepSeekJSONClient, TailoringLLMClient):
                     f"{prompt}\n\n"
                     "The previous response did not meet the content requirements. "
                     "Return up to 6 ranked personal advantages, include every structured "
-                    "work experience and honor award, and put only remaining supported "
-                    "technical capabilities in related skills."
+                    "work experience and honor award, and include every evidence-supported "
+                    "candidate skill in related skills even when it also appears in a "
+                    "personal advantage."
                 ),
             )
         return draft
@@ -228,34 +229,7 @@ class LocalFallbackTailoringClient(TailoringLLMClient):
             )
             for item in resume.honor_awards
         ]
-        advantage_fact_ids = {
-            fact_id
-            for sentence in summary
-            for fact_id in sentence.source_fact_ids
-        }
-        skills = []
-        jd_text = jd.model_dump_json().casefold()
-        for skill in candidate_skills(resume):
-            if skill["name"].casefold() not in jd_text:
-                continue
-            evidence_fact_ids = skill["evidence_fact_ids"][:2]
-            if (
-                not evidence_fact_ids
-                or advantage_fact_ids.intersection(evidence_fact_ids)
-            ):
-                continue
-            skills.append(
-                TailoredSentence(
-                    section="related_skills",
-                    sentence=(
-                        f"{skill['proficiency']}{skill['name']}，"
-                        "能够在相关项目或工作场景中应用。"
-                    ),
-                    source_fact_ids=evidence_fact_ids,
-                )
-            )
-            if len(skills) == 4:
-                break
+        skills = ranked_candidate_skill_sentences(jd, resume)
         return TailoredResumeDraft(
             jd_id=jd.jd_id,
             resume_id=resume.resume_id,
@@ -403,7 +377,12 @@ def rewrite_resume(
     )
     draft = TailoredResumeDraft.model_validate(raw_draft)
     validated_draft = validate_tailored_resume_draft(draft, jd, resume)
-    return rank_and_filter_draft(validated_draft, match_report, jd)
+    return rank_and_filter_draft(
+        validated_draft,
+        match_report,
+        jd,
+        resume,
+    )
 
 
 def fact_check_resume(
@@ -476,6 +455,12 @@ def build_tailored_resume(
         fact_check_report,
         client=client,
     )
+    revised_draft = rank_and_filter_draft(
+        revised_draft,
+        match_report,
+        jd,
+        resume,
+    )
     final_fact_check_report = fact_check_resume(
         jd.jd_id,
         resume,
@@ -493,6 +478,12 @@ def build_tailored_resume(
             final_fact_check_report,
             client=client,
         )
+        revised_draft = rank_and_filter_draft(
+            revised_draft,
+            match_report,
+            jd,
+            resume,
+        )
         final_fact_check_report = fact_check_resume(
             jd.jd_id,
             resume,
@@ -503,6 +494,7 @@ def build_tailored_resume(
         revised_draft,
         match_report,
         jd,
+        resume,
     )
     return (
         match_report,
@@ -857,6 +849,7 @@ def rank_and_filter_draft(
     draft: TailoredResumeDraft,
     match_report: RequirementMatchReport,
     jd: ParsedJD | None = None,
+    resume: ParsedResume | None = None,
 ) -> TailoredResumeDraft:
     fact_scores: dict[str, int] = {}
     match_count = len(match_report.matches)
@@ -892,16 +885,11 @@ def rank_and_filter_draft(
         sentence
         for _, sentence in ranked_advantages[:6]
     ]
-    advantage_fact_ids = {
-        fact_id
-        for sentence in advantages
-        for fact_id in sentence.source_fact_ids
-    }
-    related_skills = [
-        sentence
-        for sentence in draft.skills
-        if not advantage_fact_ids.intersection(sentence.source_fact_ids)
-    ]
+    related_skills = (
+        ranked_candidate_skill_sentences(jd, resume, fact_scores)
+        if jd is not None and resume is not None
+        else list(draft.skills)
+    )
 
     return draft.model_copy(
         update={
@@ -1020,6 +1008,117 @@ def candidate_skills(resume: ParsedResume) -> list[dict]:
             }
         )
     return candidates
+
+
+def ranked_candidate_skill_sentences(
+    jd: ParsedJD,
+    resume: ParsedResume,
+    fact_scores: dict[str, int] | None = None,
+) -> list[TailoredSentence]:
+    fact_scores = fact_scores or {}
+    ranked_skills = []
+    seen_names = set()
+    for index, skill in enumerate(candidate_skills(resume)):
+        name = skill["name"].strip()
+        name_key = name.casefold()
+        evidence_fact_ids = skill["evidence_fact_ids"]
+        if not name or not evidence_fact_ids or name_key in seen_names:
+            continue
+        seen_names.add(name_key)
+        evidence_score = sum(
+            fact_scores.get(fact_id, 0)
+            for fact_id in evidence_fact_ids
+        )
+        ranked_skills.append(
+            (
+                -_skill_jd_relevance(name, jd),
+                -evidence_score,
+                index,
+                TailoredSentence(
+                    section="related_skills",
+                    sentence=_format_skill_phrase(
+                        skill["proficiency"],
+                        name,
+                    ),
+                    source_fact_ids=evidence_fact_ids,
+                ),
+            )
+        )
+
+    ranked_skills.sort(key=lambda item: item[:3])
+    return [item[3] for item in ranked_skills]
+
+
+def _skill_jd_relevance(skill_name: str, jd: ParsedJD) -> int:
+    score = 0
+    weighted_sections = (
+        (5000, jd.required_skills),
+        (4500, jd.tools_and_technologies),
+        (4000, jd.preferred_skills),
+        (1500, jd.responsibilities),
+        (1000, jd.soft_skills),
+    )
+    for weight, texts in weighted_sections:
+        if any(_skill_name_matches_text(skill_name, text) for text in texts):
+            score = max(score, weight)
+
+    for requirement in normalized_requirements(jd):
+        requirement_texts = [
+            requirement.requirement_text,
+            *requirement.keywords,
+        ]
+        if not any(
+            _skill_name_matches_text(skill_name, text)
+            for text in requirement_texts
+        ):
+            continue
+        if requirement.category == "required_skill":
+            score = max(score, 5000)
+        elif requirement.category == "tool":
+            score = max(score, 4500)
+        elif requirement.category == "preferred_skill":
+            score = max(score, 4000)
+        elif requirement.priority == "must_have":
+            score = max(score, 3500)
+        else:
+            score = max(score, 2000)
+    return score
+
+
+def _skill_name_matches_text(skill_name: str, text: str) -> bool:
+    normalized_name = skill_name.strip().casefold()
+    normalized_text = text.strip().casefold()
+    if not normalized_name or not normalized_text:
+        return False
+    if not normalized_name.isascii():
+        return normalized_name in normalized_text
+
+    left_boundary = (
+        r"(?<![a-z0-9])"
+        if normalized_name[0].isalnum()
+        else ""
+    )
+    right_boundary = (
+        r"(?![a-z0-9])"
+        if normalized_name[-1].isalnum()
+        else ""
+    )
+    return bool(
+        re.search(
+            rf"{left_boundary}{re.escape(normalized_name)}{right_boundary}",
+            normalized_text,
+        )
+    )
+
+
+def _format_skill_phrase(proficiency: str, skill_name: str) -> str:
+    prefix = {
+        "了解": "了解",
+        "熟悉": "熟悉使用",
+        "熟练": "熟练使用",
+        "精通": "精通",
+    }.get(proficiency, "了解")
+    return f"{prefix} {skill_name}"
 
 
 def fact_index(resume: ParsedResume) -> dict[str, ExperienceFact]:
@@ -1170,8 +1269,9 @@ Personal advantage requirements:
   earlier or must-have requirement should appear first.
 - State the capability first, then include a concrete work or project experience
   in the same sentence as evidence when supported.
-- Prefer distinct capabilities and evidence. Do not repeat the same claim in
-  related skills.
+- Prefer distinct capabilities and evidence.
+- When fewer than 6 strongly JD-related capabilities exist, broadly useful and
+  supported capabilities may appear later in the list.
 - Each sentence should normally be 25-70 Chinese characters.
 
 Work experience requirements:
@@ -1190,13 +1290,15 @@ Honor and award requirements:
 - Do not inflate the award level, ranking, scope, selection rate, or result.
 
 Related skill requirements:
-- Select only skills relevant to the JD and supported by evidence_fact_ids.
+- Include every Candidate skill supported by one or more evidence_fact_ids.
+- A skill must still appear here when it is already mentioned in a personal
+  advantage.
+- Order required JD skills first, then JD tools and preferred skills, then other
+  JD-related skills, and finally broadly useful skills such as Excel.
 - Use the stored proficiency exactly; never upgrade it.
-- Include only technical capabilities not already covered by personal advantages.
-- Write natural phrases such as "熟练使用 Unity，熟悉其操作与开发流程",
-  not isolated words such as "Unity / C# / Java".
-- Related skills may be combined only when all claims are supported by the cited
-  source_fact_ids.
+- Write one short phrase per skill using only proficiency plus skill name:
+  "了解 Excel", "熟悉使用 Unity", "熟练使用 Unity", or "精通 AI".
+- Do not append an unsupported ability, workflow, result, or explanatory clause.
 
 Return valid JSON:
 {{
@@ -1319,8 +1421,10 @@ Rules:
 - Preserve every valid work_experience_id and revise only its content bullets.
 - Preserve every valid honor_award_id and revise only its description bullets.
   Never change the award name, issuer, date, level, or ranking.
-- For related skills, use only JD-relevant Candidate skills not already covered
-  by personal advantages and keep their stored proficiency.
+- For related skills, preserve every evidence-supported Candidate skill even when
+  it is covered by personal advantages. Keep its stored proficiency, use one
+  proficiency-plus-name phrase per skill, and order JD-related skills before
+  broadly useful skills.
 - Return the complete revised draft as valid JSON.
 
 Return valid JSON:
@@ -1391,14 +1495,21 @@ def _draft_needs_content_retry(draft: dict, resume: ParsedResume) -> bool:
         or len(honor_awards) != len(resume.honor_awards)
     ):
         return True
+    expected_skill_count = len(
+        {
+            skill["name"].strip().casefold()
+            for skill in candidate_skills(resume)
+            if skill["name"].strip() and skill["evidence_fact_ids"]
+        }
+    )
     if (
         not isinstance(skills, list)
-        or len(skills) > 6
+        or len(skills) < expected_skill_count
     ):
         return True
     return any(
         not isinstance(item, dict)
-        or len(str(item.get("sentence", "")).strip()) < 8
+        or len(str(item.get("sentence", "")).strip()) < 3
         for item in skills
     )
 

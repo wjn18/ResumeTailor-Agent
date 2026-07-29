@@ -147,6 +147,17 @@ class AuditedTailoringClient(TailoringLLMClient):
                         "suggestion": None,
                     }
                 )
+        for skill in draft.skills:
+            checks.append(
+                {
+                    "section": skill.section,
+                    "sentence": skill.sentence,
+                    "source_fact_ids": skill.source_fact_ids,
+                    "support_status": SUPPORTED,
+                    "issue": None,
+                    "suggestion": None,
+                }
+            )
         return {
             "jd_id": jd_id,
             "resume_id": resume.resume_id,
@@ -304,6 +315,14 @@ class TailoringWorkflowTests(unittest.TestCase):
         self.assertIn("Never invent or rewrite company", rewrite_prompt)
         self.assertIn("Never invent or rewrite the award name", rewrite_prompt)
         self.assertIn("Use the stored proficiency exactly", rewrite_prompt)
+        self.assertIn(
+            "A skill must still appear here when it is already mentioned",
+            rewrite_prompt,
+        )
+        self.assertIn(
+            "finally broadly useful skills such as Excel",
+            rewrite_prompt,
+        )
         self.assertIn('"proficiency": "熟练"', rewrite_prompt)
 
     def test_candidate_skills_keep_proficiency_and_evidence(self):
@@ -430,7 +449,7 @@ class TailoringWorkflowTests(unittest.TestCase):
         self.assertNotIn("Python", formal_resume.related_skills)
         self.assertNotIn("FastAPI", formal_resume.related_skills)
 
-    def test_advantages_are_ranked_limited_and_removed_from_related_skills(self):
+    def test_advantages_are_ranked_without_removing_related_skills(self):
         advantages = [
             TailoredSentence(
                 section="advantages",
@@ -476,7 +495,73 @@ class TailoringWorkflowTests(unittest.TestCase):
         self.assertEqual(result.summary[0].sentence, "优势 7")
         self.assertEqual(
             [item.sentence for item in result.skills],
-            ["补充技能"],
+            ["重复技能", "补充技能"],
+        )
+
+    def test_related_skills_include_advantage_skill_and_general_skill_last(self):
+        resume = sample_resume().model_copy(
+            update={
+                "skills": [
+                    Skill(
+                        name="Excel",
+                        proficiency="熟悉",
+                        evidence_fact_ids=["fact_excel"],
+                    ),
+                    Skill(
+                        name="FastAPI",
+                        proficiency="熟练",
+                        evidence_fact_ids=["fact_001"],
+                    ),
+                ],
+                "experience_facts": [
+                    ExperienceFact(
+                        fact_id="fact_excel",
+                        category="skill",
+                        entity_name="Excel",
+                        fact_text="日常使用 Excel 整理项目数据。",
+                    )
+                ],
+            }
+        )
+        draft = TailoredResumeDraft(
+            jd_id="jd_test",
+            resume_id=resume.resume_id,
+            summary=[
+                TailoredSentence(
+                    section="advantages",
+                    sentence="熟练使用 FastAPI 开发后端接口。",
+                    source_fact_ids=["fact_001"],
+                )
+            ],
+        )
+        report = RequirementMatchReport(
+            jd_id="jd_test",
+            resume_id=resume.resume_id,
+            matches=[
+                {
+                    "requirement_id": "req_001",
+                    "requirement_text": "FastAPI",
+                    "match_status": "matched",
+                    "matched_fact_ids": ["fact_001"],
+                    "reasoning": "岗位明确要求 FastAPI。",
+                }
+            ],
+        )
+
+        result = rank_and_filter_draft(
+            draft,
+            report,
+            sample_jd(),
+            resume,
+        )
+
+        self.assertEqual(
+            [item.sentence for item in result.skills],
+            ["熟练使用 FastAPI", "熟悉使用 Excel"],
+        )
+        self.assertEqual(
+            result.skills[0].source_fact_ids,
+            ["fact_001"],
         )
 
     def test_formal_work_experience_preserves_parsed_metadata(self):
