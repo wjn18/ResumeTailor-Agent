@@ -50,13 +50,12 @@ npm run dev
 3. 创建服务时填写 `DEEPSEEK_API_KEY`，等待后端部署完成并记录
    `https://...onrender.com` 地址。访问该地址的 `/health`，确认返回
    `{"status":"ok"}`。
-4. 登录 Netlify，选择 **Add new project > Import an existing project**，
-   连接同一个仓库，将 Production branch 设置为 `FastAPI`。
+4. 打开已创建的 Netlify 项目
+   `https://app.netlify.com/projects/resume-tailor-agent`，连接同一个
+   GitHub 仓库，将 Production branch 设置为 `FastAPI`。
 5. Netlify 会读取 `netlify.toml`。添加环境变量
    `NEXT_PUBLIC_API_URL=https://...onrender.com`，然后部署。
-6. 记录 Netlify 的 `https://...netlify.app` 地址。在 Render 服务的
-   Environment 中添加
-   `CORS_ORIGINS=https://...netlify.app`，保存并重新部署后端。
+6. 打开 `https://resume-tailor-agent.netlify.app` 测试完整生成流程。
 
 免费 Render 服务休眠或重新部署时会清除本地运行数据。当前版本仍可完成
 上传、生成、预览和立即下载，但保存的简历与解析 JSON 不保证长期保留。
