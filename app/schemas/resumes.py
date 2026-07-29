@@ -52,6 +52,15 @@ class ExperienceFact(BaseModel):
     source_location: Optional[str] = None
 
 
+class WorkExperience(BaseModel):
+    work_experience_id: str
+    company: str
+    job_title: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    facts: list[ExperienceFact] = Field(default_factory=list)
+
+
 class Project(BaseModel):
     project_id: str
     name: str
@@ -70,6 +79,7 @@ class ParsedResume(BaseModel):
     phone: Optional[str] = None
     education: list[Education] = Field(default_factory=list)
     skills: list[Skill] = Field(default_factory=list)
+    work_experiences: list[WorkExperience] = Field(default_factory=list)
     projects: list[Project] = Field(default_factory=list)
     experience_facts: list[ExperienceFact] = Field(default_factory=list)
 

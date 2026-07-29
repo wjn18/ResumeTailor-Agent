@@ -28,6 +28,7 @@ import type {
   FormalEducation,
   FormalProject,
   FormalResume,
+  FormalWorkExperience,
 } from "@/types";
 
 type ViewState = "input" | "generating" | "preview";
@@ -46,6 +47,14 @@ const emptyProject = (): FormalProject => ({
   start_date: null,
   end_date: null,
   technologies: [],
+  bullets: [""],
+});
+
+const emptyWorkExperience = (): FormalWorkExperience => ({
+  company: "",
+  job_title: null,
+  start_date: null,
+  end_date: null,
   bullets: [""],
 });
 
@@ -395,17 +404,98 @@ function ResumeEditor({
       </div>
 
       <EditableListSection
-        title="个人总结"
-        items={resume.summary}
+        title="个人优势"
+        items={resume.advantages}
         editable={editable}
-        onChange={(items) => update("summary", items)}
+        onChange={(items) => update("advantages", items.slice(0, 6))}
       />
-      <EditableListSection
-        title="相关经历"
-        items={resume.experience}
-        editable={editable}
-        onChange={(items) => update("experience", items)}
-      />
+
+      {(resume.work_experiences.length > 0 || editable) && (
+        <ResumeSection title="工作经历">
+          {resume.work_experiences.map((workExperience, index) => (
+            <div className="resume-entry" key={`work-${index}`}>
+              <div className="entry-heading">
+                <EditableField
+                  value={workExperience.company}
+                  onChange={(value) => {
+                    const items = [...resume.work_experiences];
+                    items[index] = {...workExperience, company: value};
+                    update("work_experiences", items);
+                  }}
+                  editable={editable}
+                  className="entry-title"
+                  placeholder="公司名称"
+                />
+                {editable && (
+                  <IconButton
+                    label="删除工作经历"
+                    onClick={() =>
+                      update(
+                        "work_experiences",
+                        resume.work_experiences.filter(
+                          (_, itemIndex) => itemIndex !== index,
+                        ),
+                      )
+                    }
+                  >
+                    <Trash2 size={16} />
+                  </IconButton>
+                )}
+              </div>
+              <div className="entry-meta">
+                <EditableField
+                  value={workExperience.job_title ?? ""}
+                  onChange={(value) => {
+                    const items = [...resume.work_experiences];
+                    items[index] = {...workExperience, job_title: value};
+                    update("work_experiences", items);
+                  }}
+                  editable={editable}
+                  placeholder="职位"
+                />
+                <span>·</span>
+                <EditableField
+                  value={[workExperience.start_date, workExperience.end_date]
+                    .filter(Boolean)
+                    .join(" - ")}
+                  onChange={(value) => {
+                    const [start = "", end = ""] = value.split(" - ");
+                    const items = [...resume.work_experiences];
+                    items[index] = {
+                      ...workExperience,
+                      start_date: start,
+                      end_date: end,
+                    };
+                    update("work_experiences", items);
+                  }}
+                  editable={editable}
+                  placeholder="在职时间"
+                />
+              </div>
+              <EditableList
+                items={workExperience.bullets}
+                editable={editable}
+                onChange={(bullets) => {
+                  const items = [...resume.work_experiences];
+                  items[index] = {...workExperience, bullets};
+                  update("work_experiences", items);
+                }}
+              />
+            </div>
+          ))}
+          {editable && (
+            <AddButton
+              label="添加工作经历"
+              onClick={() =>
+                update(
+                  "work_experiences",
+                  [...resume.work_experiences, emptyWorkExperience()],
+                )
+              }
+            />
+          )}
+        </ResumeSection>
+      )}
 
       {(resume.projects.length > 0 || editable) && (
         <ResumeSection title="项目经历">
@@ -545,10 +635,10 @@ function ResumeEditor({
       )}
 
       <EditableListSection
-        title="技能"
-        items={resume.skills}
+        title="相关技能"
+        items={resume.related_skills}
         editable={editable}
-        onChange={(items) => update("skills", items)}
+        onChange={(items) => update("related_skills", items)}
         compact
       />
     </article>

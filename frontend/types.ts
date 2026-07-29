@@ -25,11 +25,23 @@ export type FormalProject = {
   bullets: string[];
 };
 
+export type FormalWorkExperience = {
+  company: string;
+  job_title: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  bullets: string[];
+};
+
 export type FormalResume = {
   name: string | null;
   headline: string | null;
   email: string | null;
   phone: string | null;
+  advantages: string[];
+  work_experiences: FormalWorkExperience[];
+  related_skills: string[];
+  // Historical response fields.
   summary: string[];
   experience: string[];
   education: FormalEducation[];

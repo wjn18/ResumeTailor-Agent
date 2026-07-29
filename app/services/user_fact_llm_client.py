@@ -123,6 +123,9 @@ Rules:
   use or independently completed work, and 精通 only when explicitly stated.
 - Set verified to true because the fact is directly supported by the user input.
 - Set source_location to "user_input".
+- If the user explicitly states employment information, put it in work_experiences
+  with the exact company, job title, start date, and end date. Use null for
+  employment metadata that the user did not state.
 - Return empty arrays for sections that are not stated.
 
 Return valid JSON matching this shape:
@@ -146,6 +149,25 @@ Return valid JSON matching this shape:
       "proficiency": "了解 | 熟悉 | 熟练 | 精通",
       "category": "string or null",
       "evidence_fact_ids": ["fact_id"]
+    }}
+  ],
+  "work_experiences": [
+    {{
+      "work_experience_id": "string",
+      "company": "string",
+      "job_title": "string or null",
+      "start_date": "string or null",
+      "end_date": "string or null",
+      "facts": [
+        {{
+          "fact_id": "string",
+          "category": "work",
+          "entity_name": "company name",
+          "fact_text": "string",
+          "verified": true,
+          "source_location": "user_input"
+        }}
+      ]
     }}
   ],
   "projects": [

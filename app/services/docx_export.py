@@ -126,8 +126,33 @@ def _add_resume_content(
     document: Document,
     resume: FormalResumeDocument,
 ) -> None:
-    _add_text_section(document, "个人总结", resume.summary, bullets=False)
-    _add_text_section(document, "相关经历", resume.experience, bullets=True)
+    advantages = resume.advantages or resume.summary
+    _add_text_section(document, "个人优势", advantages[:6], bullets=True)
+
+    if resume.work_experiences:
+        document.add_heading("工作经历", level=1)
+        for work_experience in resume.work_experiences:
+            heading = document.add_paragraph()
+            heading.paragraph_format.space_before = Pt(3)
+            heading.paragraph_format.space_after = Pt(2)
+            heading.paragraph_format.keep_with_next = True
+            company = heading.add_run(work_experience.company)
+            _set_run_font(company, size=10.5, color=INK, bold=True)
+
+            metadata = _work_metadata(work_experience)
+            if metadata:
+                meta_run = heading.add_run(f"  |  {metadata}")
+                _set_run_font(meta_run, size=9, color=MUTED)
+
+            for bullet in work_experience.bullets:
+                _add_bullet(document, bullet)
+    elif resume.experience:
+        _add_text_section(
+            document,
+            "相关经历",
+            resume.experience,
+            bullets=True,
+        )
 
     if resume.projects:
         document.add_heading("项目经历", level=1)
@@ -186,11 +211,12 @@ def _add_resume_content(
                 detail = paragraph.add_run(f"  |  {suffix}")
                 _set_run_font(detail, size=9, color=MUTED)
 
-    if resume.skills:
-        document.add_heading("技能", level=1)
+    related_skills = resume.related_skills or resume.skills
+    if related_skills:
+        document.add_heading("相关技能", level=1)
         paragraph = document.add_paragraph()
         paragraph.paragraph_format.space_after = Pt(0)
-        run = paragraph.add_run("  /  ".join(resume.skills))
+        run = paragraph.add_run("  /  ".join(related_skills))
         _set_run_font(run, size=10, color=INK)
 
 
@@ -226,6 +252,19 @@ def _project_metadata(project) -> str:
     if project.role:
         values.append(project.role.strip())
     dates = _date_range(project.start_date, project.end_date)
+    if dates:
+        values.append(dates)
+    return "  |  ".join(values)
+
+
+def _work_metadata(work_experience) -> str:
+    values = []
+    if work_experience.job_title:
+        values.append(work_experience.job_title.strip())
+    dates = _date_range(
+        work_experience.start_date,
+        work_experience.end_date,
+    )
     if dates:
         values.append(dates)
     return "  |  ".join(values)

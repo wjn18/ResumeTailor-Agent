@@ -11,6 +11,7 @@ from app.schemas.resumes import (
     ParsedResume,
     Project,
     SourceDocument,
+    WorkExperience,
 )
 from app.services.user_fact_llm_client import (
     LocalFallbackUserFactParser,
@@ -36,6 +37,31 @@ class ProjectFactParser(UserFactLLMClient):
                             entity_name="ResumeTailor",
                             fact_text=user_text,
                             source_location="user_input",
+                        )
+                    ],
+                )
+            ],
+        ).model_dump()
+
+
+class WorkFactParser(UserFactLLMClient):
+    def parse_user_facts(self, user_text, source_document):
+        return ParsedResume(
+            resume_id="resume_from_model",
+            source_document=source_document,
+            work_experiences=[
+                WorkExperience(
+                    work_experience_id="work_from_model",
+                    company="示例科技",
+                    job_title="后端工程师",
+                    start_date="2024.01",
+                    end_date="2025.01",
+                    facts=[
+                        ExperienceFact(
+                            fact_id="fact_from_model",
+                            category="work",
+                            entity_name="示例科技",
+                            fact_text=user_text,
                         )
                     ],
                 )
@@ -185,6 +211,35 @@ class UserFactParserTests(unittest.TestCase):
                 self.assertEqual(len(result.projects[0].facts), 2)
                 self.assertTrue(
                     result.projects[0].facts[1].fact_id.startswith("fact_user_")
+                )
+
+    def test_normalizes_and_merges_user_work_experience(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            existing = ParsedResume(resume_id="resume_existing")
+
+            with patch("app.services.resume_parser.RESUME_DATA_DIR", data_dir):
+                from app.services.resume_parser import save_parsed_resume
+
+                save_parsed_resume(existing)
+                result = parse_user_fact_text_to_json(
+                    "使用 FastAPI 构建后端接口。",
+                    resume_id=existing.resume_id,
+                    parser_client=WorkFactParser(),
+                )
+
+                work = result.work_experiences[0]
+                self.assertEqual(work.company, "示例科技")
+                self.assertEqual(work.job_title, "后端工程师")
+                self.assertTrue(
+                    work.work_experience_id.startswith("work_user_")
+                )
+                self.assertTrue(
+                    work.facts[0].fact_id.startswith("fact_user_")
+                )
+                self.assertEqual(
+                    work.facts[0].source_location,
+                    "user_input:user_input",
                 )
 
 

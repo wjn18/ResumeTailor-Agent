@@ -1,6 +1,12 @@
 from uuid import uuid4
 
-from app.schemas.resumes import ExperienceFact, ParsedResume, Project, SourceDocument
+from app.schemas.resumes import (
+    ExperienceFact,
+    ParsedResume,
+    Project,
+    SourceDocument,
+    WorkExperience,
+)
 from app.services.resume_parser import load_parsed_resume, save_parsed_resume
 from app.services.user_fact_llm_client import (
     DeepSeekUserFactParser,
@@ -65,6 +71,25 @@ def _normalize_user_fact_source(
         fact_number += 1
         return normalized
 
+    work_experiences = []
+    for work_number, work_experience in enumerate(
+        parsed_resume.work_experiences,
+        start=1,
+    ):
+        work_experiences.append(
+            work_experience.model_copy(
+                update={
+                    "work_experience_id": (
+                        f"work_user_{token}_{work_number:03d}"
+                    ),
+                    "facts": [
+                        normalize_fact(fact)
+                        for fact in work_experience.facts
+                    ],
+                }
+            )
+        )
+
     projects = []
     for project_number, project in enumerate(parsed_resume.projects, start=1):
         projects.append(
@@ -95,6 +120,7 @@ def _normalize_user_fact_source(
 
     return parsed_resume.model_copy(
         update={
+            "work_experiences": work_experiences,
             "projects": projects,
             "experience_facts": experience_facts,
             "skills": skills,
@@ -116,6 +142,10 @@ def _merge_user_facts(
             ),
             "skills": _deduplicate_skills(
                 existing_resume.skills + user_facts.skills
+            ),
+            "work_experiences": _merge_work_experiences(
+                existing_resume.work_experiences,
+                user_facts.work_experiences,
             ),
             "projects": _merge_projects(
                 existing_resume.projects,
@@ -173,6 +203,44 @@ def _deduplicate_skills(skills: list) -> list:
             }
         )
     return unique_skills
+
+
+def _merge_work_experiences(
+    existing_items: list[WorkExperience],
+    new_items: list[WorkExperience],
+) -> list[WorkExperience]:
+    merged_items = list(existing_items)
+    indexes = {
+        _work_identity(item): index
+        for index, item in enumerate(merged_items)
+    }
+
+    for item in new_items:
+        identity = _work_identity(item)
+        existing_index = indexes.get(identity)
+        if existing_index is None:
+            indexes[identity] = len(merged_items)
+            merged_items.append(item)
+            continue
+
+        existing = merged_items[existing_index]
+        merged_items[existing_index] = existing.model_copy(
+            update={
+                "job_title": existing.job_title or item.job_title,
+                "start_date": existing.start_date or item.start_date,
+                "end_date": existing.end_date or item.end_date,
+                "facts": _deduplicate_facts(existing.facts + item.facts),
+            }
+        )
+
+    return merged_items
+
+
+def _work_identity(item: WorkExperience) -> tuple[str, str]:
+    return (
+        item.company.strip().casefold(),
+        (item.job_title or "").strip().casefold(),
+    )
 
 
 def _merge_projects(

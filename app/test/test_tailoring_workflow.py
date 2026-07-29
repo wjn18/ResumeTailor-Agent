@@ -14,6 +14,7 @@ from app.schemas.resumes import (
     ParsedResume,
     Project,
     Skill,
+    WorkExperience,
 )
 from app.schemas.tailoring import (
     FactCheckReport,
@@ -21,6 +22,7 @@ from app.schemas.tailoring import (
     RequirementMatchReport,
     TailoredResumeDraft,
     TailoredSentence,
+    TailoredWorkExperience,
 )
 from app.services.document_reader import SUPPORTED_EXTENSIONS, read_document_text
 from app.services.tailored_resume_storage import save_tailored_resume
@@ -32,10 +34,15 @@ from app.services.tailoring import (
     build_rewrite_prompt,
     build_tailored_resume,
     candidate_skills,
+    rank_and_filter_draft,
     validate_fact_check_report,
     validate_match_report,
+    validate_tailored_resume_draft,
 )
-from app.services.llm_client import build_resume_parse_prompt
+from app.services.llm_client import (
+    _work_experience_parse_incomplete,
+    build_resume_parse_prompt,
+)
 
 
 class AuditedTailoringClient(TailoringLLMClient):
@@ -65,12 +72,23 @@ class AuditedTailoringClient(TailoringLLMClient):
             "headline": jd.job_title,
             "summary": [
                 {
-                    "section": "summary",
+                    "section": "advantages",
                     "sentence": "使用 FastAPI 服务百万用户。",
                     "source_fact_ids": ["fact_001"],
                 }
             ],
-            "experience": [],
+            "work_experiences": [
+                {
+                    "work_experience_id": "work_001",
+                    "bullets": [
+                        {
+                            "section": "work_experience",
+                            "sentence": "使用 FastAPI 构建后端服务。",
+                            "source_fact_ids": ["fact_001"],
+                        }
+                    ],
+                }
+            ],
             "skills": [],
         }
 
@@ -78,21 +96,34 @@ class AuditedTailoringClient(TailoringLLMClient):
         self.fact_check_calls += 1
         sentence = draft.summary[0]
         is_revised = sentence.sentence == "使用 FastAPI 构建后端服务。"
+        checks = [
+            {
+                "section": sentence.section,
+                "sentence": sentence.sentence,
+                "source_fact_ids": sentence.source_fact_ids,
+                "support_status": (
+                    SUPPORTED if is_revised else PARTIALLY_SUPPORTED
+                ),
+                "issue": None if is_revised else "百万用户没有事实依据。",
+                "suggestion": None if is_revised else "删除未提供的用户规模。",
+            }
+        ]
+        for work_experience in draft.work_experiences:
+            for bullet in work_experience.bullets:
+                checks.append(
+                    {
+                        "section": bullet.section,
+                        "sentence": bullet.sentence,
+                        "source_fact_ids": bullet.source_fact_ids,
+                        "support_status": SUPPORTED,
+                        "issue": None,
+                        "suggestion": None,
+                    }
+                )
         return {
             "jd_id": jd_id,
             "resume_id": resume.resume_id,
-            "checks": [
-                {
-                    "section": sentence.section,
-                    "sentence": sentence.sentence,
-                    "source_fact_ids": sentence.source_fact_ids,
-                    "support_status": (
-                        SUPPORTED if is_revised else PARTIALLY_SUPPORTED
-                    ),
-                    "issue": None if is_revised else "百万用户没有事实依据。",
-                    "suggestion": None if is_revised else "删除未提供的用户规模。",
-                }
-            ],
+            "checks": checks,
         }
 
     def revise_after_fact_check(self, jd, resume, draft, fact_check_report):
@@ -103,12 +134,15 @@ class AuditedTailoringClient(TailoringLLMClient):
             "headline": jd.job_title,
             "summary": [
                 {
-                    "section": "summary",
+                    "section": "advantages",
                     "sentence": "使用 FastAPI 构建后端服务。",
                     "source_fact_ids": ["fact_001"],
                 }
             ],
-            "experience": [],
+            "work_experiences": [
+                item.model_dump()
+                for item in draft.work_experiences
+            ],
             "skills": [],
         }
 
@@ -167,6 +201,23 @@ def sample_resume() -> ParsedResume:
                 evidence_fact_ids=["fact_001"],
             ),
         ],
+        work_experiences=[
+            WorkExperience(
+                work_experience_id="work_001",
+                company="示例科技",
+                job_title="后端工程师",
+                start_date="2023.06",
+                end_date="2025.06",
+                facts=[
+                    ExperienceFact(
+                        fact_id="fact_001",
+                        category="work",
+                        entity_name="示例科技",
+                        fact_text="使用 FastAPI 构建后端服务。",
+                    )
+                ],
+            )
+        ],
         projects=[
             Project(
                 project_id="project_001",
@@ -181,14 +232,6 @@ def sample_resume() -> ParsedResume:
                         fact_text="实现简历解析与存储流程。",
                     )
                 ],
-            )
-        ],
-        experience_facts=[
-            ExperienceFact(
-                fact_id="fact_001",
-                category="experience",
-                entity_name="示例科技",
-                fact_text="使用 FastAPI 构建后端服务。",
             )
         ],
     )
@@ -208,7 +251,9 @@ class TailoringWorkflowTests(unittest.TestCase):
 
         self.assertIn("atomic facts", parse_prompt)
         self.assertIn('"proficiency": "了解 | 熟悉 | 熟练 | 精通"', parse_prompt)
-        self.assertIn("Return 3-4 concise Chinese sentences", rewrite_prompt)
+        self.assertIn("Return 3-6 concise Chinese bullet sentences", rewrite_prompt)
+        self.assertIn("work_experience_id", parse_prompt)
+        self.assertIn("Never invent or rewrite company", rewrite_prompt)
         self.assertIn("Use the stored proficiency exactly", rewrite_prompt)
         self.assertIn('"proficiency": "熟练"', rewrite_prompt)
 
@@ -218,6 +263,52 @@ class TailoringWorkflowTests(unittest.TestCase):
 
         self.assertEqual(fastapi["proficiency"], "熟练")
         self.assertEqual(fastapi["evidence_fact_ids"], ["fact_001"])
+
+    def test_work_section_triggers_structured_parse_retry_check(self):
+        self.assertTrue(
+            _work_experience_parse_incomplete(
+                {"work_experiences": []},
+                "工作经历\n示例科技 后端工程师",
+            )
+        )
+        self.assertFalse(
+            _work_experience_parse_incomplete(
+                {
+                    "work_experiences": [
+                        {
+                            "company": "示例科技",
+                            "work_experience_id": "work_001",
+                        }
+                    ]
+                },
+                "工作经历\n示例科技 后端工程师",
+            )
+        )
+
+    def test_work_bullet_cannot_cite_a_project_fact(self):
+        draft = TailoredResumeDraft(
+            jd_id="jd_test",
+            resume_id="resume_test",
+            work_experiences=[
+                TailoredWorkExperience(
+                    work_experience_id="work_001",
+                    bullets=[
+                        TailoredSentence(
+                            section="work_experience",
+                            sentence="实现简历解析与存储流程。",
+                            source_fact_ids=["fact_project_001"],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        with self.assertRaisesRegex(ValueError, "valid source_fact_id"):
+            validate_tailored_resume_draft(
+                draft,
+                sample_jd(),
+                sample_resume(),
+            )
 
     def test_formal_resume_uses_only_generated_skill_sentences(self):
         jd = sample_jd()
@@ -237,11 +328,92 @@ class TailoringWorkflowTests(unittest.TestCase):
         formal_resume = assemble_formal_resume(jd, resume, draft)
 
         self.assertEqual(
-            formal_resume.skills,
+            formal_resume.related_skills,
             ["熟练使用 FastAPI，能够完成后端接口开发。"],
         )
-        self.assertNotIn("Python", formal_resume.skills)
-        self.assertNotIn("FastAPI", formal_resume.skills)
+        self.assertNotIn("Python", formal_resume.related_skills)
+        self.assertNotIn("FastAPI", formal_resume.related_skills)
+
+    def test_advantages_are_ranked_limited_and_removed_from_related_skills(self):
+        advantages = [
+            TailoredSentence(
+                section="advantages",
+                sentence=f"优势 {index}",
+                source_fact_ids=[f"fact_{index}"],
+            )
+            for index in range(1, 8)
+        ]
+        draft = TailoredResumeDraft(
+            jd_id="jd_test",
+            resume_id="resume_test",
+            summary=advantages,
+            skills=[
+                TailoredSentence(
+                    section="related_skills",
+                    sentence="重复技能",
+                    source_fact_ids=["fact_7"],
+                ),
+                TailoredSentence(
+                    section="related_skills",
+                    sentence="补充技能",
+                    source_fact_ids=["fact_other"],
+                ),
+            ],
+        )
+        report = RequirementMatchReport(
+            jd_id="jd_test",
+            resume_id="resume_test",
+            matches=[
+                {
+                    "requirement_id": "req_001",
+                    "requirement_text": "核心要求",
+                    "match_status": "matched",
+                    "matched_fact_ids": ["fact_7"],
+                    "reasoning": "最高适配",
+                }
+            ],
+        )
+
+        result = rank_and_filter_draft(draft, report)
+
+        self.assertEqual(len(result.summary), 6)
+        self.assertEqual(result.summary[0].sentence, "优势 7")
+        self.assertEqual(
+            [item.sentence for item in result.skills],
+            ["补充技能"],
+        )
+
+    def test_formal_work_experience_preserves_parsed_metadata(self):
+        resume = sample_resume()
+        draft = TailoredResumeDraft(
+            jd_id="jd_test",
+            resume_id=resume.resume_id,
+            work_experiences=[
+                TailoredWorkExperience(
+                    work_experience_id="work_001",
+                    bullets=[
+                        TailoredSentence(
+                            section="work_experience",
+                            sentence="负责后端服务开发。",
+                            source_fact_ids=["fact_001"],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        formal_resume = assemble_formal_resume(
+            sample_jd(),
+            resume,
+            draft,
+        )
+
+        work = formal_resume.work_experiences[0]
+        self.assertEqual(work.company, "示例科技")
+        self.assertEqual(work.job_title, "后端工程师")
+        self.assertEqual(work.start_date, "2023.06")
+        self.assertEqual(work.end_date, "2025.06")
+        self.assertEqual(work.bullets, ["负责后端服务开发。"])
 
     def test_build_revises_after_audit_and_checks_again(self):
         client = AuditedTailoringClient()
@@ -379,7 +551,7 @@ class TailoringWorkflowTests(unittest.TestCase):
                     formal_resume=formal_resume,
                 )
                 edited = formal_resume.model_copy(
-                    update={"summary": ["用户确认后的个人总结。"]}
+                    update={"advantages": ["用户确认后的个人优势。"]}
                 )
                 client = TestClient(app)
 
@@ -391,8 +563,8 @@ class TailoringWorkflowTests(unittest.TestCase):
                 )
                 self.assertEqual(edit_response.status_code, 200)
                 self.assertEqual(
-                    edit_response.json()["formal_resume"]["summary"],
-                    ["用户确认后的个人总结。"],
+                    edit_response.json()["formal_resume"]["advantages"],
+                    ["用户确认后的个人优势。"],
                 )
 
                 confirm_response = client.post(
@@ -413,8 +585,14 @@ class TailoringWorkflowTests(unittest.TestCase):
                 document_text = "\n".join(
                     paragraph.text for paragraph in document.paragraphs
                 )
-                self.assertIn("用户确认后的个人总结。", document_text)
+                self.assertIn("用户确认后的个人优势。", document_text)
+                self.assertIn("工作经历", document_text)
+                self.assertIn("示例科技", document_text)
                 self.assertIn("简历生成系统", document_text)
+                self.assertLess(
+                    document_text.index("工作经历"),
+                    document_text.index("项目经历"),
+                )
 
     def test_docx_input_is_supported_and_readable(self):
         self.assertIn(".pdf", SUPPORTED_EXTENSIONS)

@@ -10,11 +10,13 @@ from app.schemas.tailoring import (
     FormalEducation,
     FormalProject,
     FormalResumeDocument,
+    FormalWorkExperience,
     RequirementMatch,
     RequirementMatchReport,
     SentenceFactCheck,
     TailoredResumeDraft,
     TailoredSentence,
+    TailoredWorkExperience,
 )
 from app.services.deepseek_client import DeepSeekJSONClient
 
@@ -93,9 +95,9 @@ class DeepSeekTailoringClient(DeepSeekJSONClient, TailoringLLMClient):
                 user_prompt=(
                     f"{prompt}\n\n"
                     "The previous response did not meet the content requirements. "
-                    "Return 3-4 substantive summary sentences and, when supported "
-                    "candidate skills exist, 2-4 natural JD-relevant skill sentences. "
-                    "Do not return keyword-only skill items."
+                    "Return up to 6 ranked personal advantages, include every structured "
+                    "work experience, and put only remaining supported technical "
+                    "capabilities in related skills."
                 ),
             )
         return draft
@@ -188,33 +190,47 @@ class LocalFallbackTailoringClient(TailoringLLMClient):
                 selected_fact_ids.append(fact_id)
             if len(selected_fact_ids) == 6:
                 break
-        experience = [
-            TailoredSentence(
-                section="experience",
-                sentence=facts_by_id[fact_id].fact_text,
-                source_fact_ids=[fact_id],
-            )
-            for fact_id in selected_fact_ids
-        ]
         summary = [
             TailoredSentence(
-                section="summary",
+                section="advantages",
                 sentence=facts_by_id[fact_id].fact_text,
                 source_fact_ids=[fact_id],
             )
-            for fact_id in selected_fact_ids[:4]
+            for fact_id in selected_fact_ids[:6]
         ]
+        work_experiences = [
+            TailoredWorkExperience(
+                work_experience_id=item.work_experience_id,
+                bullets=[
+                    TailoredSentence(
+                        section="work_experience",
+                        sentence=fact.fact_text,
+                        source_fact_ids=[fact.fact_id],
+                    )
+                    for fact in item.facts
+                ],
+            )
+            for item in resume.work_experiences
+        ]
+        advantage_fact_ids = {
+            fact_id
+            for sentence in summary
+            for fact_id in sentence.source_fact_ids
+        }
         skills = []
         jd_text = jd.model_dump_json().casefold()
         for skill in candidate_skills(resume):
             if skill["name"].casefold() not in jd_text:
                 continue
             evidence_fact_ids = skill["evidence_fact_ids"][:2]
-            if not evidence_fact_ids:
+            if (
+                not evidence_fact_ids
+                or advantage_fact_ids.intersection(evidence_fact_ids)
+            ):
                 continue
             skills.append(
                 TailoredSentence(
-                    section="skills",
+                    section="related_skills",
                     sentence=(
                         f"{skill['proficiency']}{skill['name']}，"
                         "能够在相关项目或工作场景中应用。"
@@ -229,7 +245,7 @@ class LocalFallbackTailoringClient(TailoringLLMClient):
             resume_id=resume.resume_id,
             headline=jd.job_title,
             summary=summary,
-            experience=experience,
+            work_experiences=work_experiences,
             skills=skills,
         ).model_dump()
 
@@ -327,6 +343,13 @@ class LocalFallbackTailoringClient(TailoringLLMClient):
             resume_id=resume.resume_id,
             headline=draft.headline or jd.job_title,
             summary=revise_section(draft.summary),
+            work_experiences=[
+                TailoredWorkExperience(
+                    work_experience_id=item.work_experience_id,
+                    bullets=revise_section(item.bullets),
+                )
+                for item in draft.work_experiences
+            ],
             experience=revise_section(draft.experience),
             skills=revise_section(draft.skills),
         ).model_dump()
@@ -355,7 +378,8 @@ def rewrite_resume(
         match_report,
     )
     draft = TailoredResumeDraft.model_validate(raw_draft)
-    return validate_tailored_resume_draft(draft, jd, resume)
+    validated_draft = validate_tailored_resume_draft(draft, jd, resume)
+    return rank_and_filter_draft(validated_draft, match_report, jd)
 
 
 def fact_check_resume(
@@ -451,6 +475,11 @@ def build_tailored_resume(
             revised_draft,
             client=client,
         )
+    revised_draft = rank_and_filter_draft(
+        revised_draft,
+        match_report,
+        jd,
+    )
     return (
         match_report,
         initial_draft,
@@ -470,19 +499,59 @@ def assemble_formal_resume(
         for sentence in revised_draft.skills
         if sentence.sentence.strip()
     ]
+    work_experiences_by_id = {
+        item.work_experience_id: item
+        for item in resume.work_experiences
+    }
+    tailored_work_experiences = revised_draft.work_experiences
+    if not tailored_work_experiences:
+        tailored_work_experiences = [
+            TailoredWorkExperience(
+                work_experience_id=item.work_experience_id,
+                bullets=[
+                    TailoredSentence(
+                        section="work_experience",
+                        sentence=fact.fact_text,
+                        source_fact_ids=[fact.fact_id],
+                    )
+                    for fact in item.facts[:6]
+                ],
+            )
+            for item in resume.work_experiences
+        ]
+    formal_work_experiences = []
+    for tailored_work in tailored_work_experiences:
+        source_work = work_experiences_by_id.get(
+            tailored_work.work_experience_id
+        )
+        if source_work is None:
+            continue
+        formal_work_experiences.append(
+            FormalWorkExperience(
+                company=source_work.company,
+                job_title=source_work.job_title,
+                start_date=source_work.start_date,
+                end_date=source_work.end_date,
+                bullets=[
+                    sentence.sentence
+                    for sentence in tailored_work.bullets
+                ],
+            )
+        )
+
     return FormalResumeDocument(
         name=resume.name,
         headline=revised_draft.headline or jd.job_title,
         email=resume.email,
         phone=resume.phone,
-        summary=[
+        advantages=[
             sentence.sentence
             for sentence in revised_draft.summary
         ],
-        experience=[
-            sentence.sentence
-            for sentence in revised_draft.experience
-        ],
+        work_experiences=formal_work_experiences,
+        related_skills=_deduplicate_text(generated_skill_text),
+        summary=[],
+        experience=[],
         education=[
             FormalEducation.model_validate(education.model_dump())
             for education in resume.education
@@ -498,7 +567,7 @@ def assemble_formal_resume(
             )
             for project in resume.projects
         ],
-        skills=_deduplicate_text(generated_skill_text),
+        skills=[],
     )
 
 
@@ -572,25 +641,158 @@ def validate_tailored_resume_draft(
 ) -> TailoredResumeDraft:
     valid_fact_ids = set(fact_index(resume))
 
-    def validate_sentence(sentence: TailoredSentence) -> TailoredSentence:
+    def validate_sentence(
+        sentence: TailoredSentence,
+        section: str,
+        allowed_fact_ids: set[str] | None = None,
+    ) -> TailoredSentence:
         source_fact_ids = [
             fact_id
             for fact_id in sentence.source_fact_ids
-            if fact_id in valid_fact_ids
+            if (
+                fact_id in valid_fact_ids
+                and (
+                    allowed_fact_ids is None
+                    or fact_id in allowed_fact_ids
+                )
+            )
         ]
         if not source_fact_ids:
             raise ValueError(
                 "Every generated sentence must include at least one valid source_fact_id."
             )
-        return sentence.model_copy(update={"source_fact_ids": source_fact_ids})
+        return sentence.model_copy(
+            update={
+                "section": section,
+                "source_fact_ids": source_fact_ids,
+            }
+        )
+
+    valid_work_experiences = {
+        item.work_experience_id: item
+        for item in resume.work_experiences
+    }
+    tailored_work_experiences = []
+    seen_work_ids = set()
+    for item in draft.work_experiences:
+        if (
+            item.work_experience_id not in valid_work_experiences
+            or item.work_experience_id in seen_work_ids
+        ):
+            continue
+        seen_work_ids.add(item.work_experience_id)
+        work_fact_ids = {
+            fact.fact_id
+            for fact in valid_work_experiences[
+                item.work_experience_id
+            ].facts
+        }
+        tailored_work_experiences.append(
+            TailoredWorkExperience(
+                work_experience_id=item.work_experience_id,
+                bullets=[
+                    validate_sentence(
+                        sentence,
+                        "work_experience",
+                        work_fact_ids,
+                    )
+                    for sentence in item.bullets[:6]
+                ],
+            )
+        )
+
+    for work_id, work_experience in valid_work_experiences.items():
+        if work_id in seen_work_ids:
+            continue
+        tailored_work_experiences.append(
+            TailoredWorkExperience(
+                work_experience_id=work_id,
+                bullets=[
+                    TailoredSentence(
+                        section="work_experience",
+                        sentence=fact.fact_text,
+                        source_fact_ids=[fact.fact_id],
+                    )
+                    for fact in work_experience.facts[:6]
+                ],
+            )
+        )
 
     return TailoredResumeDraft(
         jd_id=jd.jd_id,
         resume_id=resume.resume_id,
         headline=draft.headline,
-        summary=[validate_sentence(sentence) for sentence in draft.summary],
-        experience=[validate_sentence(sentence) for sentence in draft.experience],
-        skills=[validate_sentence(sentence) for sentence in draft.skills],
+        summary=[
+            validate_sentence(sentence, "advantages")
+            for sentence in draft.summary[:6]
+        ],
+        work_experiences=tailored_work_experiences,
+        experience=[
+            validate_sentence(sentence, "work_experience")
+            for sentence in draft.experience
+        ],
+        skills=[
+            validate_sentence(sentence, "related_skills")
+            for sentence in draft.skills
+        ],
+    )
+
+
+def rank_and_filter_draft(
+    draft: TailoredResumeDraft,
+    match_report: RequirementMatchReport,
+    jd: ParsedJD | None = None,
+) -> TailoredResumeDraft:
+    fact_scores: dict[str, int] = {}
+    match_count = len(match_report.matches)
+    requirement_priorities = {
+        requirement.requirement_id: requirement.priority
+        for requirement in normalized_requirements(jd)
+    } if jd is not None else {}
+    for index, match in enumerate(match_report.matches):
+        if match.match_status != MATCHED:
+            continue
+        priority_bonus = (
+            1000
+            if requirement_priorities.get(match.requirement_id) == "must_have"
+            else 100
+        )
+        requirement_score = priority_bonus + max(1, match_count - index)
+        for fact_id in match.matched_fact_ids:
+            fact_scores[fact_id] = (
+                fact_scores.get(fact_id, 0) + requirement_score
+            )
+
+    ranked_advantages = sorted(
+        enumerate(draft.summary),
+        key=lambda item: (
+            -sum(
+                fact_scores.get(fact_id, 0)
+                for fact_id in item[1].source_fact_ids
+            ),
+            item[0],
+        ),
+    )
+    advantages = [
+        sentence
+        for _, sentence in ranked_advantages[:6]
+    ]
+    advantage_fact_ids = {
+        fact_id
+        for sentence in advantages
+        for fact_id in sentence.source_fact_ids
+    }
+    related_skills = [
+        sentence
+        for sentence in draft.skills
+        if not advantage_fact_ids.intersection(sentence.source_fact_ids)
+    ]
+
+    return draft.model_copy(
+        update={
+            "summary": advantages,
+            "skills": related_skills,
+        }
     )
 
 
@@ -661,9 +863,18 @@ def validate_fact_check_report(
 
 def collect_resume_facts(resume: ParsedResume) -> list[ExperienceFact]:
     facts = list(resume.experience_facts)
+    for work_experience in resume.work_experiences:
+        facts.extend(work_experience.facts)
     for project in resume.projects:
         facts.extend(project.facts)
-    return facts
+    unique_facts = []
+    seen_fact_ids = set()
+    for fact in facts:
+        if fact.fact_id in seen_fact_ids:
+            continue
+        seen_fact_ids.add(fact.fact_id)
+        unique_facts.append(fact)
+    return unique_facts
 
 
 def candidate_skills(resume: ParsedResume) -> list[dict]:
@@ -743,6 +954,8 @@ def normalized_requirements(jd: ParsedJD) -> list[JDRequirement]:
 
 def iter_tailored_sentences(draft: TailoredResumeDraft) -> Iterable[TailoredSentence]:
     yield from draft.summary
+    for work_experience in draft.work_experiences:
+        yield from work_experience.bullets
     yield from draft.experience
     yield from draft.skills
 
@@ -792,6 +1005,17 @@ def build_rewrite_prompt(
 ) -> str:
     facts = [fact.model_dump() for fact in collect_resume_facts(resume)]
     skills = candidate_skills(resume)
+    work_experiences = [
+        {
+            "work_experience_id": item.work_experience_id,
+            "company": item.company,
+            "job_title": item.job_title,
+            "start_date": item.start_date,
+            "end_date": item.end_date,
+            "fact_ids": [fact.fact_id for fact in item.facts],
+        }
+        for item in resume.work_experiences
+    ]
     return f"""
 Rewrite resume content for the target job using only the candidate fact library.
 
@@ -811,22 +1035,28 @@ Forbidden:
 
 Every generated sentence must include source_fact_ids.
 
-Summary requirements:
-- Return 3-4 concise Chinese sentences when at least three relevant facts exist.
-- Each sentence should normally be 25-60 Chinese characters.
-- Express capability plus an application context or supporting experience.
-- Do not output a keyword list and do not merely repeat the skills section.
-- Use different evidence across the summary where possible.
+Personal advantage requirements:
+- Return 3-6 concise Chinese bullet sentences, never more than 6.
+- Order them from highest to lowest relevance to the JD. Evidence matched to an
+  earlier or must-have requirement should appear first.
+- State the capability first, then include a concrete work or project experience
+  in the same sentence as evidence when supported.
+- Prefer distinct capabilities and evidence. Do not repeat the same claim in
+  related skills.
+- Each sentence should normally be 25-70 Chinese characters.
 
-Experience requirements:
-- Write complete, natural statements with an action and object.
-- Include method, technology, scope, or result only when cited facts support it.
-- Do not turn a long source paragraph into a comma-separated keyword list.
+Work experience requirements:
+- Include every item from Structured work experiences, preserving its
+  work_experience_id. Never invent or rewrite company, job title, or dates.
+- Return only tailored work-content bullets under each work_experience_id.
+- Every bullet must cite only fact_ids belonging to that work experience.
+- Write complete statements with an action and object. Add method, technology,
+  scope, or result only when cited facts support it.
 
-Skill requirements:
+Related skill requirements:
 - Select only skills relevant to the JD and supported by evidence_fact_ids.
 - Use the stored proficiency exactly; never upgrade it.
-- Return 2-4 concise Chinese skill sentences when relevant supported skills exist.
+- Include only technical capabilities not already covered by personal advantages.
 - Write natural phrases such as "熟练使用 Unity，熟悉其操作与开发流程",
   not isolated words such as "Unity / C# / Java".
 - Related skills may be combined only when all claims are supported by the cited
@@ -838,13 +1068,18 @@ Return valid JSON:
   "resume_id": "{resume.resume_id}",
   "headline": "string or null",
   "summary": [
-    {{"section": "summary", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+    {{"section": "advantages", "sentence": "string", "source_fact_ids": ["fact_id"]}}
   ],
-  "experience": [
-    {{"section": "experience", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+  "work_experiences": [
+    {{
+      "work_experience_id": "existing work_experience_id",
+      "bullets": [
+        {{"section": "work_experience", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+      ]
+    }}
   ],
   "skills": [
-    {{"section": "skills", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+    {{"section": "related_skills", "sentence": "string", "source_fact_ids": ["fact_id"]}}
   ]
 }}
 
@@ -856,6 +1091,9 @@ Match report:
 
 Candidate facts:
 {json.dumps(facts, ensure_ascii=False, indent=2)}
+
+Structured work experiences:
+{json.dumps(work_experiences, ensure_ascii=False, indent=2)}
 
 Candidate skills with stored proficiency and evidence:
 {json.dumps(skills, ensure_ascii=False, indent=2)}
@@ -929,10 +1167,11 @@ Rules:
 - Do not add technology, numbers, seniority, proficiency, roles, or outcomes.
 - Do not combine unrelated projects into one claim.
 - Every returned sentence must cite one or more provided source_fact_ids.
-- Preserve 3-4 substantive summary sentences whenever the candidate has enough
-  distinct relevant facts; do not replace the summary with a keyword list.
-- For skills, use only JD-relevant Candidate skills, keep their stored proficiency,
-  and return natural short sentences rather than isolated technology names.
+- Preserve 3-6 ranked personal advantages when enough distinct relevant facts
+  exist. Each advantage should state a capability and its supporting experience.
+- Preserve every valid work_experience_id and revise only its content bullets.
+- For related skills, use only JD-relevant Candidate skills not already covered
+  by personal advantages and keep their stored proficiency.
 - Return the complete revised draft as valid JSON.
 
 Return valid JSON:
@@ -941,13 +1180,18 @@ Return valid JSON:
   "resume_id": "{resume.resume_id}",
   "headline": "string or null",
   "summary": [
-    {{"section": "summary", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+    {{"section": "advantages", "sentence": "string", "source_fact_ids": ["fact_id"]}}
   ],
-  "experience": [
-    {{"section": "experience", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+  "work_experiences": [
+    {{
+      "work_experience_id": "existing work_experience_id",
+      "bullets": [
+        {{"section": "work_experience", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+      ]
+    }}
   ],
   "skills": [
-    {{"section": "skills", "sentence": "string", "source_fact_ids": ["fact_id"]}}
+    {{"section": "related_skills", "sentence": "string", "source_fact_ids": ["fact_id"]}}
   ]
 }}
 
@@ -970,25 +1214,23 @@ Fact-check report:
 
 def _draft_needs_content_retry(draft: dict, resume: ParsedResume) -> bool:
     summary = draft.get("summary")
+    work_experiences = draft.get("work_experiences")
     skills = draft.get("skills")
     expected_summary_count = min(3, len(collect_resume_facts(resume)))
     if (
         not isinstance(summary, list)
         or len(summary) < expected_summary_count
-        or len(summary) > 4
+        or len(summary) > 6
     ):
         return True
-    supported_skill_count = sum(
-        bool(skill["evidence_fact_ids"])
-        for skill in candidate_skills(resume)
-    )
-    if not supported_skill_count:
-        return False
-    expected_skill_count = min(2, supported_skill_count)
+    if resume.work_experiences and (
+        not isinstance(work_experiences, list)
+        or len(work_experiences) != len(resume.work_experiences)
+    ):
+        return True
     if (
         not isinstance(skills, list)
-        or len(skills) < expected_skill_count
-        or len(skills) > 4
+        or len(skills) > 6
     ):
         return True
     return any(

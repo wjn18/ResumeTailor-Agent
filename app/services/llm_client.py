@@ -39,6 +39,20 @@ class DeepSeekResumeParser(DeepSeekJSONClient, ResumeLLMClient):
             ),
             user_prompt=prompt,
         )
+        if _work_experience_parse_incomplete(parsed_data, resume_text):
+            parsed_data = self.request_json(
+                system_prompt=(
+                    "You are correcting an incomplete structured resume parse. "
+                    "Return only valid JSON and do not invent employment metadata."
+                ),
+                user_prompt=(
+                    f"{prompt}\n\n"
+                    "The resume contains an explicit work or internship section. "
+                    "The previous response did not populate work_experiences. "
+                    "Extract each employment item with its exact company, job title, "
+                    "dates, and atomic facts. Use null for missing metadata."
+                ),
+            )
         parsed_data["source_document"] = source_document.model_dump()
         return ParsedResume.model_validate(parsed_data).model_dump()
 
@@ -125,7 +139,11 @@ Fact extraction rules:
 - Preserve the action, object, context, method/technology, and result when they
   are explicitly present. Never invent a result or metric.
 - Prefer 3-6 atomic facts for a detailed project instead of one oversized fact.
-- Keep every fact_id unique across experience_facts and all project facts.
+- Keep every fact_id unique across experience_facts, work facts, and project facts.
+- Put employment content in work_experiences. Extract company, job title, start
+  date, and end date exactly as written; use null when a field is not stated.
+- Work facts must stay under their work_experience and must not be duplicated in
+  the top-level experience_facts array.
 
 Skill rules:
 - Every skill must include one proficiency modifier: 了解, 熟悉, 熟练, or 精通.
@@ -157,6 +175,25 @@ Return valid JSON matching this shape:
       "proficiency": "了解 | 熟悉 | 熟练 | 精通",
       "category": "string or null",
       "evidence_fact_ids": ["fact_id"]
+    }}
+  ],
+  "work_experiences": [
+    {{
+      "work_experience_id": "string",
+      "company": "string",
+      "job_title": "string or null",
+      "start_date": "string or null",
+      "end_date": "string or null",
+      "facts": [
+        {{
+          "fact_id": "string",
+          "category": "work",
+          "entity_name": "company name",
+          "fact_text": "string",
+          "verified": true,
+          "source_location": "work experience"
+        }}
+      ]
     }}
   ],
   "projects": [
@@ -194,6 +231,31 @@ Return valid JSON matching this shape:
 Resume text:
 {resume_text}
 """.strip()
+
+
+def _work_experience_parse_incomplete(
+    parsed_data: dict,
+    resume_text: str,
+) -> bool:
+    has_work_section = bool(
+        re.search(
+            r"工作经历|工作经验|实习经历|职业经历|work\s+experience|employment",
+            resume_text,
+            re.IGNORECASE,
+        )
+    )
+    if not has_work_section:
+        return False
+    work_experiences = parsed_data.get("work_experiences")
+    return (
+        not isinstance(work_experiences, list)
+        or not work_experiences
+        or any(
+            not isinstance(item, dict)
+            or not str(item.get("company", "")).strip()
+            for item in work_experiences
+        )
+    )
 
 
 def _infer_proficiency(text: str, skill_name: str) -> str:
