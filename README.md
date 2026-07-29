@@ -53,8 +53,7 @@ npm run dev
 4. 打开已创建的 Netlify 项目
    `https://app.netlify.com/projects/resume-tailor-agent`，连接同一个
    GitHub 仓库，将 Production branch 设置为 `FastAPI`。
-5. Netlify 会读取 `netlify.toml`。添加环境变量
-   `NEXT_PUBLIC_API_URL=https://...onrender.com`，然后部署。
+5. Netlify 会读取 `netlify.toml` 中已配置的 Render 后端地址，直接部署。
 6. 打开 `https://resume-tailor-agent.netlify.app` 测试完整生成流程。
 
 免费 Render 服务休眠或重新部署时会清除本地运行数据。当前版本仍可完成
