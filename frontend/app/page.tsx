@@ -3,6 +3,7 @@
 import {
   Check,
   ChevronLeft,
+  CircleAlert,
   Download,
   FileText,
   LoaderCircle,
@@ -16,12 +17,14 @@ import {
 import {useRef, useState} from "react";
 
 import {
-  buildTailoredResume,
+  APIRequestError,
+  buildInitialTailoredResume,
   confirmResume,
   docxDownloadUrl,
   mergePersonalFacts,
   parseJD,
   parseResume,
+  reviewTailoredResume,
   saveResumeEdits,
 } from "@/lib/api";
 import type {
@@ -33,6 +36,45 @@ import type {
 } from "@/types";
 
 type ViewState = "input" | "generating" | "preview";
+type ReviewState = "idle" | "reviewing" | "replacing" | "ready" | "error";
+type GenerationStage =
+  | "idle"
+  | "resume"
+  | "jd"
+  | "personal"
+  | "initial"
+  | "review";
+
+const generationStageLabels: Record<GenerationStage, string> = {
+  idle: "准备就绪",
+  resume: "正在解析简历",
+  jd: "正在解析岗位",
+  personal: "正在解析补充信息",
+  initial: "正在生成初稿",
+  review: "正在重新审核",
+};
+
+function formatRequestError(
+  stageLabel: string,
+  error: unknown,
+): string {
+  if (error instanceof APIRequestError) {
+    const location = error.status
+      ? `${error.path}，HTTP ${error.status}`
+      : error.path;
+    return `${stageLabel}失败（${location}）：${error.message}`;
+  }
+  if (error instanceof TypeError) {
+    return `${stageLabel}失败：无法连接后端服务，请检查网络或服务状态。`;
+  }
+  return `${stageLabel}失败：${
+    error instanceof Error ? error.message : "未知错误"
+  }`;
+}
+
+function wait(milliseconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
 
 const emptyEducation = (): FormalEducation => ({
   school: "",
@@ -68,6 +110,7 @@ const emptyHonorAward = (): FormalHonorAward => ({
 
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const generationRunRef = useRef(0);
   const [view, setView] = useState<ViewState>("input");
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [jdText, setJdText] = useState("");
@@ -78,36 +121,174 @@ export default function Home() {
   const [tailoredResumeId, setTailoredResumeId] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [generationStage, setGenerationStage] =
+    useState<GenerationStage>("idle");
+  const [reviewState, setReviewState] = useState<ReviewState>("idle");
+  const [updatingModule, setUpdatingModule] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const canGenerate = Boolean(resumeFile && jdText.trim());
+  const isReviewLocked =
+    reviewState === "reviewing" || reviewState === "replacing";
 
   async function handleGenerate() {
     if (!resumeFile || !jdText.trim()) return;
+    const runId = ++generationRunRef.current;
+    let stage: GenerationStage = "resume";
+    let initialResumeIsVisible = false;
     setError(null);
+    setReviewState("idle");
+    setUpdatingModule(null);
+    setTailoredResumeId(null);
+    setGenerationStage(stage);
     setView("generating");
 
     try {
       let parsedResume = await parseResume(resumeFile);
+      if (runId !== generationRunRef.current) return;
+
+      stage = "jd";
+      setGenerationStage(stage);
       const parsedJD = await parseJD(jdText, company, jobTitle);
+      if (runId !== generationRunRef.current) return;
+
       if (personalInfo.trim()) {
+        stage = "personal";
+        setGenerationStage(stage);
         parsedResume = await mergePersonalFacts(
           personalInfo,
           parsedResume.resume_id,
         );
+        if (runId !== generationRunRef.current) return;
       }
-      const result = await buildTailoredResume(parsedJD, parsedResume);
-      setFormalResume(result.formal_resume);
-      setTailoredResumeId(result.saved_resume.tailored_resume_id);
-      setView("preview");
-    } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "生成失败，请稍后重试。",
+
+      stage = "initial";
+      setGenerationStage(stage);
+      const initialResult = await buildInitialTailoredResume(
+        parsedJD,
+        parsedResume,
       );
-      setView("input");
+      if (runId !== generationRunRef.current) return;
+
+      setFormalResume(initialResult.formal_resume);
+      setView("preview");
+      setReviewState("reviewing");
+      initialResumeIsVisible = true;
+
+      stage = "review";
+      setGenerationStage(stage);
+      const reviewResult = await reviewTailoredResume(
+        parsedJD,
+        parsedResume,
+        initialResult.match_report,
+        initialResult.draft,
+      );
+      if (runId !== generationRunRef.current) return;
+
+      setReviewState("replacing");
+      await replaceResumeModules(
+        reviewResult.formal_resume,
+        runId,
+      );
+      if (runId !== generationRunRef.current) return;
+
+      setTailoredResumeId(
+        reviewResult.saved_resume.tailored_resume_id,
+      );
+      setReviewState("ready");
+      setGenerationStage("idle");
+    } catch (requestError) {
+      if (runId !== generationRunRef.current) return;
+      setError(
+        formatRequestError(
+          generationStageLabels[stage].replace("正在", ""),
+          requestError,
+        ),
+      );
+      setGenerationStage("idle");
+      if (initialResumeIsVisible) {
+        setReviewState("error");
+      } else {
+        setView("input");
+        setReviewState("idle");
+      }
     }
+  }
+
+  async function replaceResumeModules(
+    finalResume: FormalResume,
+    runId: number,
+  ) {
+    const modules: Array<{
+      label: string;
+      update: (current: FormalResume) => FormalResume;
+    }> = [
+      {
+        label: "个人优势",
+        update: (current) => ({
+          ...current,
+          advantages: finalResume.advantages,
+        }),
+      },
+      {
+        label: "工作经历",
+        update: (current) => ({
+          ...current,
+          work_experiences: finalResume.work_experiences,
+        }),
+      },
+      {
+        label: "项目经历",
+        update: (current) => ({
+          ...current,
+          projects: finalResume.projects,
+        }),
+      },
+      {
+        label: "荣誉奖项",
+        update: (current) => ({
+          ...current,
+          honor_awards: finalResume.honor_awards,
+        }),
+      },
+      {
+        label: "教育背景",
+        update: (current) => ({
+          ...current,
+          education: finalResume.education,
+        }),
+      },
+      {
+        label: "相关技能",
+        update: (current) => ({
+          ...current,
+          related_skills: finalResume.related_skills,
+          skills: finalResume.skills,
+        }),
+      },
+    ];
+
+    setFormalResume((current) =>
+      current
+        ? {
+            ...current,
+            name: finalResume.name,
+            headline: finalResume.headline,
+            email: finalResume.email,
+            phone: finalResume.phone,
+          }
+        : finalResume,
+    );
+
+    for (const module of modules) {
+      if (runId !== generationRunRef.current) return;
+      setUpdatingModule(module.label);
+      setFormalResume((current) =>
+        current ? module.update(current) : finalResume,
+      );
+      await wait(360);
+    }
+    setUpdatingModule(null);
   }
 
   async function handleEditToggle() {
@@ -124,9 +305,7 @@ export default function Home() {
       setIsEditing(false);
     } catch (requestError) {
       setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "保存失败。",
+        formatRequestError("保存修改", requestError),
       );
     } finally {
       setIsSaving(false);
@@ -148,9 +327,7 @@ export default function Home() {
       window.setTimeout(resetWorkspace, 700);
     } catch (requestError) {
       setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "确认失败。",
+        formatRequestError("确认并导出", requestError),
       );
     } finally {
       setIsSaving(false);
@@ -158,6 +335,7 @@ export default function Home() {
   }
 
   function resetWorkspace() {
+    generationRunRef.current += 1;
     setView("input");
     setResumeFile(null);
     setJdText("");
@@ -167,6 +345,9 @@ export default function Home() {
     setFormalResume(null);
     setTailoredResumeId(null);
     setIsEditing(false);
+    setGenerationStage("idle");
+    setReviewState("idle");
+    setUpdatingModule(null);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
@@ -176,7 +357,12 @@ export default function Home() {
       <header className="app-header">
         <button
           className="brand"
-          onClick={view === "input" ? undefined : resetWorkspace}
+          onClick={
+            view === "input" || isReviewLocked
+              ? undefined
+              : resetWorkspace
+          }
+          disabled={isReviewLocked}
           type="button"
         >
           {view !== "input" && <ChevronLeft size={18} aria-hidden />}
@@ -188,7 +374,9 @@ export default function Home() {
           {view === "input"
             ? "准备就绪"
             : view === "generating"
-              ? "正在生成"
+              ? generationStageLabels[generationStage]
+              : isReviewLocked
+                ? generationStageLabels[generationStage]
               : isEditing
                 ? "编辑中"
                 : "预览"}
@@ -283,45 +471,77 @@ export default function Home() {
       {view === "generating" && <ResumeSkeleton />}
 
       {view === "preview" && formalResume && (
-        <section className="preview-view">
+        <section
+          className="preview-view"
+          aria-busy={isReviewLocked}
+        >
+          {isReviewLocked && (
+            <div className="review-status" role="status">
+              <CircleAlert size={18} aria-hidden />
+              <div>
+                <strong>！正在重新审核中</strong>
+                <span>
+                  {reviewState === "replacing" && updatingModule
+                    ? `正在更新：${updatingModule}`
+                    : "正在逐句核对事实与岗位要求"}
+                </span>
+              </div>
+            </div>
+          )}
+
           <ResumeEditor
             resume={formalResume}
             onChange={setFormalResume}
-            editable={isEditing}
+            editable={isEditing && reviewState === "ready"}
           />
 
           {error && <p className="preview-error">{error}</p>}
 
-          <div className="preview-actions">
-            <button
-              className="secondary-action"
-              type="button"
-              onClick={handleEditToggle}
-              disabled={isSaving}
-            >
-              {isSaving && isEditing ? (
-                <LoaderCircle className="spin" size={18} aria-hidden />
-              ) : isEditing ? (
-                <Check size={18} aria-hidden />
-              ) : (
-                <Pencil size={18} aria-hidden />
-              )}
-              {isEditing ? "保存修改" : "修改"}
-            </button>
-            <button
-              className="primary-action"
-              type="button"
-              onClick={handleComplete}
-              disabled={isSaving}
-            >
-              {isSaving && !isEditing ? (
-                <LoaderCircle className="spin" size={18} aria-hidden />
-              ) : (
-                <Download size={18} aria-hidden />
-              )}
-              完成
-            </button>
-          </div>
+          {reviewState === "ready" && (
+            <div className="preview-actions">
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={handleEditToggle}
+                disabled={isSaving}
+              >
+                {isSaving && isEditing ? (
+                  <LoaderCircle className="spin" size={18} aria-hidden />
+                ) : isEditing ? (
+                  <Check size={18} aria-hidden />
+                ) : (
+                  <Pencil size={18} aria-hidden />
+                )}
+                {isEditing ? "保存修改" : "修改"}
+              </button>
+              <button
+                className="primary-action"
+                type="button"
+                onClick={handleComplete}
+                disabled={isSaving}
+              >
+                {isSaving && !isEditing ? (
+                  <LoaderCircle className="spin" size={18} aria-hidden />
+                ) : (
+                  <Download size={18} aria-hidden />
+                )}
+                完成
+              </button>
+            </div>
+          )}
+
+          {reviewState === "error" && (
+            <div className="preview-actions">
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={resetWorkspace}
+              >
+                <ChevronLeft size={18} aria-hidden />
+                返回重新生成
+              </button>
+            </div>
+          )}
         </section>
       )}
     </main>
@@ -355,7 +575,7 @@ function ResumeSkeleton() {
       </div>
       <div className="generation-status">
         <LoaderCircle className="spin" size={18} aria-hidden />
-        正在审核并重组内容
+        正在解析并生成初版简历
       </div>
     </section>
   );

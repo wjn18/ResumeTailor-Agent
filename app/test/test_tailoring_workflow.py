@@ -33,10 +33,12 @@ from app.services.tailoring import (
     SUPPORTED,
     TailoringLLMClient,
     assemble_formal_resume,
+    build_initial_tailored_resume,
     build_rewrite_prompt,
     build_tailored_resume,
     candidate_skills,
     rank_and_filter_draft,
+    review_tailored_resume,
     validate_fact_check_report,
     validate_match_report,
     validate_tailored_resume_draft,
@@ -650,6 +652,114 @@ class TailoringWorkflowTests(unittest.TestCase):
         self.assertEqual(final_report.checks[0].support_status, SUPPORTED)
         self.assertEqual(client.revision_calls, 1)
         self.assertEqual(client.fact_check_calls, 2)
+
+    def test_initial_build_and_review_can_run_as_separate_stages(self):
+        client = AuditedTailoringClient()
+        jd = sample_jd()
+        resume = sample_resume()
+
+        match_report, initial_draft = build_initial_tailored_resume(
+            jd,
+            resume,
+            client=client,
+        )
+
+        self.assertIn("百万用户", initial_draft.summary[0].sentence)
+        self.assertEqual(client.fact_check_calls, 0)
+        self.assertEqual(client.revision_calls, 0)
+
+        first_report, revised_draft, final_report = review_tailored_resume(
+            jd,
+            resume,
+            match_report,
+            initial_draft,
+            client=client,
+        )
+
+        self.assertEqual(
+            first_report.checks[0].support_status,
+            PARTIALLY_SUPPORTED,
+        )
+        self.assertEqual(
+            revised_draft.summary[0].sentence,
+            "使用 FastAPI 构建后端服务。",
+        )
+        self.assertEqual(final_report.checks[0].support_status, SUPPORTED)
+        self.assertEqual(client.fact_check_calls, 2)
+        self.assertEqual(client.revision_calls, 1)
+
+    def test_staged_http_endpoints_return_initial_then_reviewed_resume(self):
+        jd = sample_jd()
+        resume = sample_resume()
+        match_report = RequirementMatchReport(
+            jd_id=jd.jd_id,
+            resume_id=resume.resume_id,
+        )
+        draft = TailoredResumeDraft(
+            jd_id=jd.jd_id,
+            resume_id=resume.resume_id,
+            summary=[
+                TailoredSentence(
+                    section="advantages",
+                    sentence="使用 FastAPI 构建后端服务。",
+                    source_fact_ids=["fact_001"],
+                )
+            ],
+        )
+        report = FactCheckReport(
+            jd_id=jd.jd_id,
+            resume_id=resume.resume_id,
+        )
+        client = TestClient(app)
+
+        with patch(
+            "app.api.tailoring.build_initial_tailored_resume",
+            return_value=(match_report, draft),
+        ):
+            initial_response = client.post(
+                "/tailoring/build/initial",
+                json={
+                    "jd": jd.model_dump(),
+                    "resume": resume.model_dump(),
+                },
+            )
+
+        self.assertEqual(initial_response.status_code, 200)
+        self.assertEqual(
+            initial_response.json()["formal_resume"]["advantages"],
+            ["使用 FastAPI 构建后端服务。"],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch(
+                    "app.api.tailoring.review_tailored_resume",
+                    return_value=(report, draft, report),
+                ),
+                patch(
+                    "app.services.tailored_resume_storage."
+                    "TAILORED_RESUME_DATA_DIR",
+                    Path(temp_dir),
+                ),
+            ):
+                review_response = client.post(
+                    "/tailoring/build/review",
+                    json={
+                        "jd": jd.model_dump(),
+                        "resume": resume.model_dump(),
+                        "match_report": match_report.model_dump(),
+                        "draft": draft.model_dump(),
+                    },
+                )
+
+        self.assertEqual(review_response.status_code, 200)
+        self.assertEqual(
+            review_response.json()["formal_resume"]["advantages"],
+            ["使用 FastAPI 构建后端服务。"],
+        )
+        self.assertTrue(
+            review_response.json()["saved_resume"]["tailored_resume_id"]
+        )
 
     def test_build_runs_one_extra_revision_when_first_fix_still_fails(self):
         client = TwoPassRevisionClient()

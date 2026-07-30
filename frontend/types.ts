@@ -65,6 +65,21 @@ export type SavedTailoredResume = {
   docx_file_name: string | null;
 };
 
+export type RequirementMatchReport = Record<string, unknown>;
+export type TailoredResumeDraft = Record<string, unknown>;
+
+export type TailoringInitialBuildResponse = {
+  match_report: RequirementMatchReport;
+  draft: TailoredResumeDraft;
+  formal_resume: FormalResume;
+};
+
+export type TailoringReviewResponse = {
+  draft: TailoredResumeDraft;
+  formal_resume: FormalResume;
+  saved_resume: SavedTailoredResume;
+};
+
 export type TailoringBuildResponse = {
   formal_resume: FormalResume;
   saved_resume: SavedTailoredResume;

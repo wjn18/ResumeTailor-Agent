@@ -435,6 +435,37 @@ def build_tailored_resume(
     FactCheckReport,
 ]:
     client = client or DeepSeekTailoringClient()
+    match_report, initial_draft = build_initial_tailored_resume(
+        jd,
+        resume,
+        client=client,
+    )
+    (
+        fact_check_report,
+        revised_draft,
+        final_fact_check_report,
+    ) = review_tailored_resume(
+        jd,
+        resume,
+        match_report,
+        initial_draft,
+        client=client,
+    )
+    return (
+        match_report,
+        initial_draft,
+        fact_check_report,
+        revised_draft,
+        final_fact_check_report,
+    )
+
+
+def build_initial_tailored_resume(
+    jd: ParsedJD,
+    resume: ParsedResume,
+    client: TailoringLLMClient | None = None,
+) -> tuple[RequirementMatchReport, TailoredResumeDraft]:
+    client = client or DeepSeekTailoringClient()
     match_report = match_requirements(jd, resume, client=client)
     initial_draft = rewrite_resume(
         jd,
@@ -442,6 +473,17 @@ def build_tailored_resume(
         match_report=match_report,
         client=client,
     )
+    return match_report, initial_draft
+
+
+def review_tailored_resume(
+    jd: ParsedJD,
+    resume: ParsedResume,
+    match_report: RequirementMatchReport,
+    initial_draft: TailoredResumeDraft,
+    client: TailoringLLMClient | None = None,
+) -> tuple[FactCheckReport, TailoredResumeDraft, FactCheckReport]:
+    client = client or DeepSeekTailoringClient()
     fact_check_report = fact_check_resume(
         jd.jd_id,
         resume,
@@ -496,13 +538,7 @@ def build_tailored_resume(
         jd,
         resume,
     )
-    return (
-        match_report,
-        initial_draft,
-        fact_check_report,
-        revised_draft,
-        final_fact_check_report,
-    )
+    return fact_check_report, revised_draft, final_fact_check_report
 
 
 def assemble_formal_resume(

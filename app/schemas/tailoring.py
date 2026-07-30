@@ -133,6 +133,27 @@ class TailoringBuildRequest(BaseModel):
     resume: ParsedResume
 
 
+class TailoringInitialBuildResponse(BaseModel):
+    match_report: RequirementMatchReport
+    draft: TailoredResumeDraft
+    formal_resume: FormalResumeDocument
+
+
+class TailoringReviewRequest(BaseModel):
+    jd: ParsedJD
+    resume: ParsedResume
+    match_report: RequirementMatchReport
+    draft: TailoredResumeDraft
+
+
+class TailoringReviewResponse(BaseModel):
+    draft: TailoredResumeDraft
+    fact_check_report: FactCheckReport
+    final_fact_check_report: FactCheckReport
+    formal_resume: FormalResumeDocument
+    saved_resume: "SavedTailoredResume"
+
+
 class TailoringBuildResponse(BaseModel):
     match_report: RequirementMatchReport
     draft: TailoredResumeDraft

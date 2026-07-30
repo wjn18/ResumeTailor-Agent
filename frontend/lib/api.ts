@@ -2,31 +2,75 @@ import type {
   FormalResume,
   ParsedJD,
   ParsedResume,
+  RequirementMatchReport,
   SavedTailoredResume,
-  TailoringBuildResponse,
+  TailoredResumeDraft,
+  TailoringInitialBuildResponse,
+  TailoringReviewResponse,
 } from "@/types";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
+export class APIRequestError extends Error {
+  constructor(
+    message: string,
+    readonly path: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "APIRequestError";
+  }
+}
+
+function formatErrorDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "object" && item && "msg" in item) {
+          return String(item.msg);
+        }
+        return JSON.stringify(item);
+      })
+      .join("；");
+  }
+  return detail ? JSON.stringify(detail) : fallback;
+}
+
 async function request<T>(
   path: string,
   options?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, options);
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, options);
+  } catch {
+    throw new APIRequestError(
+      "无法连接后端服务，请检查网络或服务状态。",
+      path,
+      0,
+    );
+  }
   if (!response.ok) {
-    let message = `请求失败 (${response.status})`;
+    let message = response.statusText || "请求失败";
     try {
       const payload = await response.json();
-      message = payload.detail ?? message;
+      message = formatErrorDetail(payload.detail, message);
     } catch {
       // Keep the status-based error when the response is not JSON.
     }
-    throw new Error(
-      typeof message === "string" ? message : JSON.stringify(message),
+    throw new APIRequestError(message, path, response.status);
+  }
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new APIRequestError(
+      "后端返回了无法解析的 JSON 响应。",
+      path,
+      response.status,
     );
   }
-  return response.json() as Promise<T>;
 }
 
 export async function parseResume(file: File): Promise<ParsedResume> {
@@ -69,14 +113,32 @@ export async function mergePersonalFacts(
   });
 }
 
-export async function buildTailoredResume(
+export async function buildInitialTailoredResume(
   jd: ParsedJD,
   resume: ParsedResume,
-): Promise<TailoringBuildResponse> {
-  return request<TailoringBuildResponse>("/tailoring/build", {
+): Promise<TailoringInitialBuildResponse> {
+  return request<TailoringInitialBuildResponse>("/tailoring/build/initial", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({jd, resume}),
+  });
+}
+
+export async function reviewTailoredResume(
+  jd: ParsedJD,
+  resume: ParsedResume,
+  matchReport: RequirementMatchReport,
+  draft: TailoredResumeDraft,
+): Promise<TailoringReviewResponse> {
+  return request<TailoringReviewResponse>("/tailoring/build/review", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      jd,
+      resume,
+      match_report: matchReport,
+      draft,
+    }),
   });
 }
 

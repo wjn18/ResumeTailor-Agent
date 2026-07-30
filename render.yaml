@@ -17,6 +17,6 @@ services:
       - key: DEEPSEEK_API_URL
         value: https://api.deepseek.com/chat/completions
       - key: DEEPSEEK_MAX_TOKENS
-        value: "8192"
+        value: "16384"
       - key: CORS_ORIGINS
         value: https://resume-tailor-agent.netlify.app

@@ -15,6 +15,9 @@ from app.schemas.tailoring import (
     TailoredResumeDraft,
     TailoringBuildRequest,
     TailoringBuildResponse,
+    TailoringInitialBuildResponse,
+    TailoringReviewRequest,
+    TailoringReviewResponse,
 )
 from app.services.tailored_resume_storage import (
     list_tailored_resumes,
@@ -26,14 +29,90 @@ from app.services.tailored_resume_storage import (
 from app.services.docx_export import export_formal_resume_docx
 from app.services.tailoring import (
     assemble_formal_resume,
+    build_initial_tailored_resume,
     build_tailored_resume,
     fact_check_resume,
     match_requirements,
+    review_tailored_resume,
     rewrite_resume,
 )
 
 
 router = APIRouter(prefix="/tailoring", tags=["tailoring"])
+
+
+@router.post(
+    "/build/initial",
+    response_model=TailoringInitialBuildResponse,
+)
+def build_initial_resume_for_jd(payload: TailoringBuildRequest):
+    try:
+        match_report, initial_draft = build_initial_tailored_resume(
+            payload.jd,
+            payload.resume,
+        )
+        formal_resume = assemble_formal_resume(
+            payload.jd,
+            payload.resume,
+            initial_draft,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"初稿生成失败：{exc}",
+        ) from exc
+
+    return TailoringInitialBuildResponse(
+        match_report=match_report,
+        draft=initial_draft,
+        formal_resume=formal_resume,
+    )
+
+
+@router.post(
+    "/build/review",
+    response_model=TailoringReviewResponse,
+)
+def review_initial_resume(payload: TailoringReviewRequest):
+    try:
+        (
+            fact_check_report,
+            revised_draft,
+            final_fact_check_report,
+        ) = review_tailored_resume(
+            payload.jd,
+            payload.resume,
+            payload.match_report,
+            payload.draft,
+        )
+        formal_resume = assemble_formal_resume(
+            payload.jd,
+            payload.resume,
+            revised_draft,
+        )
+        saved_resume = save_tailored_resume(
+            payload.jd,
+            payload.resume,
+            revised_draft,
+            initial_draft=payload.draft,
+            formal_resume=formal_resume,
+            match_report=payload.match_report,
+            fact_check_report=fact_check_report,
+            final_fact_check_report=final_fact_check_report,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"简历审核失败：{exc}",
+        ) from exc
+
+    return TailoringReviewResponse(
+        draft=revised_draft,
+        fact_check_report=fact_check_report,
+        final_fact_check_report=final_fact_check_report,
+        formal_resume=formal_resume,
+        saved_resume=saved_resume,
+    )
 
 
 @router.post("/match", response_model=RequirementMatchReport)
