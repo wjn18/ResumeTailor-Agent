@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -30,3 +32,17 @@ class JDParseRequest(BaseModel):
     raw_text: str
     company: Optional[str] = None
     job_title: Optional[str] = None
+
+
+class JDURLExtractRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+
+
+class ExtractedJDText(BaseModel):
+    source_url: str
+    final_url: str
+    page_title: Optional[str] = None
+    raw_text: str
+    text_length: int
+    extraction_method: str
+    fetched_at: datetime
