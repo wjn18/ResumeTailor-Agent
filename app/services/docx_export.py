@@ -110,10 +110,20 @@ def _add_resume_masthead(
         _set_run_font(run, size=11, color=ACCENT, bold=True)
 
     contact_items = [
-        item.strip()
-        for item in (resume.email, resume.phone)
-        if item and item.strip()
+        (
+            f"{contact.label}：{contact.contact_value.strip()}"
+            if contact.label and contact.label.strip()
+            else contact.contact_value.strip()
+        )
+        for contact in resume.personal_contacts
+        if contact.contact_value.strip()
     ]
+    if not contact_items:
+        contact_items = [
+            item.strip()
+            for item in (resume.email, resume.phone)
+            if item and item.strip()
+        ]
     if contact_items:
         contact = document.add_paragraph()
         contact.paragraph_format.space_before = Pt(0)
@@ -126,6 +136,9 @@ def _add_resume_content(
     document: Document,
     resume: FormalResumeDocument,
 ) -> None:
+    education_experiences = resume.education_experiences or resume.education
+    _add_education_section(document, education_experiences)
+
     advantages = resume.advantages or resume.summary
     _add_text_section(document, "个人优势", advantages[:6], bullets=True)
 
@@ -204,31 +217,6 @@ def _add_resume_content(
             for bullet in honor_award.bullets:
                 _add_bullet(document, bullet)
 
-    if resume.education:
-        document.add_heading("教育背景", level=1)
-        for education in resume.education:
-            paragraph = document.add_paragraph()
-            paragraph.paragraph_format.space_after = Pt(2)
-            paragraph.paragraph_format.keep_together = True
-            school = paragraph.add_run(education.school)
-            _set_run_font(school, size=10.5, color=INK, bold=True)
-
-            details = [
-                value.strip()
-                for value in (education.degree, education.major)
-                if value and value.strip()
-            ]
-            dates = _date_range(education.start_date, education.end_date)
-            detail_text = " / ".join(details)
-            suffix = "  |  ".join(
-                value
-                for value in (detail_text, dates)
-                if value
-            )
-            if suffix:
-                detail = paragraph.add_run(f"  |  {suffix}")
-                _set_run_font(detail, size=9, color=MUTED)
-
     related_skills = resume.related_skills or resume.skills
     if related_skills:
         document.add_heading("相关技能", level=1)
@@ -236,6 +224,35 @@ def _add_resume_content(
         paragraph.paragraph_format.space_after = Pt(0)
         run = paragraph.add_run("  /  ".join(related_skills))
         _set_run_font(run, size=10, color=INK)
+
+
+def _add_education_section(document: Document, education_experiences) -> None:
+    if not education_experiences:
+        return
+
+    document.add_heading("教育经历", level=1)
+    for education in education_experiences:
+        paragraph = document.add_paragraph()
+        paragraph.paragraph_format.space_after = Pt(2)
+        paragraph.paragraph_format.keep_together = True
+        school = paragraph.add_run(education.school)
+        _set_run_font(school, size=10.5, color=INK, bold=True)
+
+        details = [
+            value.strip()
+            for value in (education.degree, education.major)
+            if value and value.strip()
+        ]
+        dates = _date_range(education.start_date, education.end_date)
+        detail_text = " / ".join(details)
+        suffix = "  |  ".join(
+            value
+            for value in (detail_text, dates)
+            if value
+        )
+        if suffix:
+            detail = paragraph.add_run(f"  |  {suffix}")
+            _set_run_font(detail, size=9, color=MUTED)
 
 
 def _add_text_section(

@@ -37,6 +37,7 @@ from app.services.tailoring import (
     build_rewrite_prompt,
     build_tailored_resume,
     candidate_skills,
+    collect_resume_facts,
     rank_and_filter_draft,
     review_tailored_resume,
     validate_fact_check_report,
@@ -44,7 +45,9 @@ from app.services.tailoring import (
     validate_tailored_resume_draft,
 )
 from app.services.llm_client import (
+    _education_experience_parse_incomplete,
     _honor_award_parse_incomplete,
+    _personal_contact_parse_incomplete,
     _work_experience_parse_incomplete,
     build_resume_parse_prompt,
 )
@@ -314,6 +317,8 @@ class TailoringWorkflowTests(unittest.TestCase):
         self.assertIn("Return 3-6 concise Chinese bullet sentences", rewrite_prompt)
         self.assertIn("work_experience_id", parse_prompt)
         self.assertIn("honor_award_id", parse_prompt)
+        self.assertIn("education_experience_id", parse_prompt)
+        self.assertIn("personal_contact_id", parse_prompt)
         self.assertIn("Never invent or rewrite company", rewrite_prompt)
         self.assertIn("Never invent or rewrite the award name", rewrite_prompt)
         self.assertIn("Use the stored proficiency exactly", rewrite_prompt)
@@ -374,6 +379,46 @@ class TailoringWorkflowTests(unittest.TestCase):
                     ]
                 },
                 "荣誉奖项\n校级优秀毕业设计",
+            )
+        )
+
+    def test_profile_sections_trigger_structured_parse_retry_checks(self):
+        self.assertTrue(
+            _education_experience_parse_incomplete(
+                {"education_experiences": []},
+                "教育经历\n示例大学 计算机科学本科",
+            )
+        )
+        self.assertTrue(
+            _personal_contact_parse_incomplete(
+                {"personal_contacts": []},
+                "邮箱：wang@example.com",
+            )
+        )
+
+    def test_profile_metadata_is_promoted_to_fact_types(self):
+        resume = sample_resume()
+
+        self.assertEqual(
+            resume.education_experiences[0].facts[0].category,
+            "education_experience",
+        )
+        self.assertEqual(
+            {contact.contact_type for contact in resume.personal_contacts},
+            {"email", "phone"},
+        )
+        collected_fact_ids = {
+            fact.fact_id
+            for fact in collect_resume_facts(resume)
+        }
+        self.assertIn(
+            resume.education_experiences[0].facts[0].fact_id,
+            collected_fact_ids,
+        )
+        self.assertTrue(
+            all(
+                contact.facts[0].fact_id not in collected_fact_ids
+                for contact in resume.personal_contacts
             )
         )
 
@@ -908,11 +953,21 @@ class TailoringWorkflowTests(unittest.TestCase):
                     paragraph.text for paragraph in document.paragraphs
                 )
                 self.assertIn("用户确认后的个人优势。", document_text)
+                self.assertIn("wang@example.com", document_text)
+                self.assertIn("教育经历", document_text)
                 self.assertIn("工作经历", document_text)
                 self.assertIn("示例科技", document_text)
                 self.assertIn("简历生成系统", document_text)
                 self.assertIn("荣誉奖项", document_text)
                 self.assertIn("优秀毕业设计", document_text)
+                self.assertLess(
+                    document_text.index("教育经历"),
+                    document_text.index("个人优势"),
+                )
+                self.assertLess(
+                    document_text.index("个人优势"),
+                    document_text.index("工作经历"),
+                )
                 self.assertLess(
                     document_text.index("工作经历"),
                     document_text.index("项目经历"),
@@ -920,10 +975,6 @@ class TailoringWorkflowTests(unittest.TestCase):
                 self.assertLess(
                     document_text.index("项目经历"),
                     document_text.index("荣誉奖项"),
-                )
-                self.assertLess(
-                    document_text.index("荣誉奖项"),
-                    document_text.index("教育背景"),
                 )
 
     def test_docx_input_is_supported_and_readable(self):

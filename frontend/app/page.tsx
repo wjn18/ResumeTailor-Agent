@@ -14,7 +14,7 @@ import {
   Upload,
   UserRoundPlus,
 } from "lucide-react";
-import {useRef, useState} from "react";
+import {Fragment, useRef, useState} from "react";
 
 import {
   APIRequestError,
@@ -224,6 +224,14 @@ export default function Home() {
       update: (current: FormalResume) => FormalResume;
     }> = [
       {
+        label: "教育经历",
+        update: (current) => ({
+          ...current,
+          education_experiences: finalResume.education_experiences,
+          education: finalResume.education,
+        }),
+      },
+      {
         label: "个人优势",
         update: (current) => ({
           ...current,
@@ -252,13 +260,6 @@ export default function Home() {
         }),
       },
       {
-        label: "教育背景",
-        update: (current) => ({
-          ...current,
-          education: finalResume.education,
-        }),
-      },
-      {
         label: "相关技能",
         update: (current) => ({
           ...current,
@@ -276,6 +277,7 @@ export default function Home() {
             headline: finalResume.headline,
             email: finalResume.email,
             phone: finalResume.phone,
+            personal_contacts: finalResume.personal_contacts,
           }
         : finalResume,
     );
@@ -615,21 +617,114 @@ function ResumeEditor({
           placeholder="目标岗位"
         />
         <div className="contact-line">
-          <EditableField
-            value={resume.email ?? ""}
-            onChange={(value) => update("email", value)}
-            editable={editable}
-            placeholder="邮箱"
-          />
-          <span>·</span>
-          <EditableField
-            value={resume.phone ?? ""}
-            onChange={(value) => update("phone", value)}
-            editable={editable}
-            placeholder="电话"
-          />
+          {resume.personal_contacts.length > 0 ? (
+            resume.personal_contacts.map((contact, index) => (
+              <Fragment key={`${contact.contact_type}-${index}`}>
+                {index > 0 && <span>·</span>}
+                <EditableField
+                  value={contact.contact_value}
+                  onChange={(value) => {
+                    const contacts = [...resume.personal_contacts];
+                    contacts[index] = {...contact, contact_value: value};
+                    onChange({
+                      ...resume,
+                      personal_contacts: contacts,
+                      email:
+                        contact.contact_type === "email"
+                          ? value
+                          : resume.email,
+                      phone:
+                        contact.contact_type === "phone"
+                          ? value
+                          : resume.phone,
+                    });
+                  }}
+                  editable={editable}
+                  placeholder={contact.label ?? contact.contact_type}
+                />
+              </Fragment>
+            ))
+          ) : (
+            <>
+              <EditableField
+                value={resume.email ?? ""}
+                onChange={(value) => update("email", value)}
+                editable={editable}
+                placeholder="邮箱"
+              />
+              <span>·</span>
+              <EditableField
+                value={resume.phone ?? ""}
+                onChange={(value) => update("phone", value)}
+                editable={editable}
+                placeholder="电话"
+              />
+            </>
+          )}
         </div>
       </div>
+
+      {(resume.education_experiences.length > 0 || editable) && (
+        <ResumeSection title="教育经历">
+          {resume.education_experiences.map((education, index) => (
+            <div className="education-row" key={`education-${index}`}>
+              <div>
+                <EditableField
+                  value={education.school}
+                  onChange={(value) => {
+                    const items = [...resume.education_experiences];
+                    items[index] = {...education, school: value};
+                    update("education_experiences", items);
+                  }}
+                  editable={editable}
+                  className="entry-title"
+                  placeholder="学校"
+                />
+                <EditableField
+                  value={[education.degree, education.major]
+                    .filter(Boolean)
+                    .join(" / ")}
+                  onChange={(value) => {
+                    const [degree = "", major = ""] = value.split(" / ");
+                    const items = [...resume.education_experiences];
+                    items[index] = {...education, degree, major};
+                    update("education_experiences", items);
+                  }}
+                  editable={editable}
+                  className="entry-meta"
+                  placeholder="学位 / 专业"
+                />
+              </div>
+              {editable && (
+                <IconButton
+                  label="删除教育经历"
+                  onClick={() =>
+                    update(
+                      "education_experiences",
+                      resume.education_experiences.filter(
+                        (_, itemIndex) => itemIndex !== index,
+                      ),
+                    )
+                  }
+                >
+                  <Trash2 size={16} />
+                </IconButton>
+              )}
+            </div>
+          ))}
+          {editable && (
+            <AddButton
+              label="添加教育经历"
+              onClick={() =>
+                update(
+                  "education_experiences",
+                  [...resume.education_experiences, emptyEducation()],
+                )
+              }
+            />
+          )}
+        </ResumeSection>
+      )}
 
       <EditableListSection
         title="个人优势"
@@ -879,63 +974,6 @@ function ResumeEditor({
                   "honor_awards",
                   [...resume.honor_awards, emptyHonorAward()],
                 )
-              }
-            />
-          )}
-        </ResumeSection>
-      )}
-
-      {(resume.education.length > 0 || editable) && (
-        <ResumeSection title="教育背景">
-          {resume.education.map((education, index) => (
-            <div className="education-row" key={`education-${index}`}>
-              <div>
-                <EditableField
-                  value={education.school}
-                  onChange={(value) => {
-                    const items = [...resume.education];
-                    items[index] = {...education, school: value};
-                    update("education", items);
-                  }}
-                  editable={editable}
-                  className="entry-title"
-                  placeholder="学校"
-                />
-                <EditableField
-                  value={[education.degree, education.major]
-                    .filter(Boolean)
-                    .join(" / ")}
-                  onChange={(value) => {
-                    const [degree = "", major = ""] = value.split(" / ");
-                    const items = [...resume.education];
-                    items[index] = {...education, degree, major};
-                    update("education", items);
-                  }}
-                  editable={editable}
-                  className="entry-meta"
-                  placeholder="学位 / 专业"
-                />
-              </div>
-              {editable && (
-                <IconButton
-                  label="删除教育经历"
-                  onClick={() =>
-                    update(
-                      "education",
-                      resume.education.filter((_, itemIndex) => itemIndex !== index),
-                    )
-                  }
-                >
-                  <Trash2 size={16} />
-                </IconButton>
-              )}
-            </div>
-          ))}
-          {editable && (
-            <AddButton
-              label="添加教育经历"
-              onClick={() =>
-                update("education", [...resume.education, emptyEducation()])
               }
             />
           )}

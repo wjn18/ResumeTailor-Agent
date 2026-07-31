@@ -4,7 +4,11 @@ from uuid import uuid4
 
 from app.schemas.resumes import ExperienceFact, ParsedResume, Skill, SourceDocument
 from app.services.deepseek_client import DeepSeekJSONClient
-from app.services.llm_client import _honor_award_parse_incomplete
+from app.services.llm_client import (
+    _education_experience_parse_incomplete,
+    _honor_award_parse_incomplete,
+    _personal_contact_parse_incomplete,
+)
 
 
 class UserFactLLMClient(ABC):
@@ -31,18 +35,41 @@ class DeepSeekUserFactParser(DeepSeekJSONClient, UserFactLLMClient):
             ),
             user_prompt=prompt,
         )
-        if _honor_award_parse_incomplete(parsed_data, user_text):
+        missing_honor = _honor_award_parse_incomplete(parsed_data, user_text)
+        missing_education = _education_experience_parse_incomplete(
+            parsed_data,
+            user_text,
+        )
+        missing_contact = _personal_contact_parse_incomplete(
+            parsed_data,
+            user_text,
+        )
+        if missing_honor or missing_education or missing_contact:
+            requirements = []
+            if missing_honor:
+                requirements.append(
+                    "Extract honor_awards with exact metadata and atomic facts."
+                )
+            if missing_education:
+                requirements.append(
+                    "Extract education_experiences with exact school, degree, "
+                    "major, dates, and atomic facts."
+                )
+            if missing_contact:
+                requirements.append(
+                    "Extract personal_contacts with exact contact types, values, "
+                    "labels, and atomic facts."
+                )
             parsed_data = self.request_json(
                 system_prompt=(
                     "You are correcting an incomplete candidate fact parse. "
-                    "Return only valid JSON and do not invent award metadata."
+                    "Return only valid JSON and do not invent metadata."
                 ),
                 user_prompt=(
                     f"{prompt}\n\n"
-                    "The input explicitly states an honor or award. The previous "
-                    "response did not populate honor_awards with award facts. "
-                    "Extract its exact name, issuer, date, and atomic facts. "
-                    "Use null for missing metadata."
+                    "The previous response omitted required structured sections. "
+                    + " ".join(requirements)
+                    + " Use null for missing metadata."
                 ),
             )
         parsed_data["source_document"] = source_document.model_dump()
@@ -120,8 +147,9 @@ class LocalFallbackUserFactParser(UserFactLLMClient):
 
 def build_user_fact_parse_prompt(user_text: str) -> str:
     return f"""
-Parse the user's self-reported skills, experience, education, projects, and
-honors or awards into the same JSON structure used by a parsed resume.
+Parse the user's self-reported skills, experience, education, personal contact
+details, projects, and honors or awards into the same JSON structure used by a
+parsed resume.
 
 Rules:
 - Extract only claims explicitly stated in the input.
@@ -131,7 +159,8 @@ Rules:
 - Split long descriptions into atomic facts. Each fact_text must be a complete,
   natural sentence with one main action or capability, not a keyword list.
 - Every extracted claim must appear exactly once in the appropriate work,
-  honor_award, project, or top-level fact collection with a unique fact_id.
+  education_experience, personal_contact, honor_award, project, or top-level
+  fact collection with a unique fact_id.
 - Every skill must contain proficiency using exactly one of 了解, 熟悉, 熟练,
   or 精通, and must cite its supporting evidence_fact_ids.
 - Use an explicitly stated proficiency when present. Otherwise use 了解 for an
@@ -147,21 +176,54 @@ Rules:
   for award metadata that the user did not state.
 - Award facts must stay under their honor_award and must not be duplicated in
   experience_facts.
+- If the user explicitly states education information, put it in
+  education_experiences with exact school, degree, major, and dates.
+- If the user explicitly states contact information, put each item in
+  personal_contacts and preserve its exact value.
+- Education and personal-contact facts must remain under their structured item
+  and must not be duplicated in experience_facts.
 - Return empty arrays for sections that are not stated.
 
 Return valid JSON matching this shape:
 {{
   "resume_id": "string",
   "name": "string or null",
-  "email": "string or null",
-  "phone": "string or null",
-  "education": [
+  "personal_contacts": [
     {{
+      "personal_contact_id": "string",
+      "contact_type": "email | phone | location | website | github | linkedin | wechat | other",
+      "contact_value": "exact contact value",
+      "label": "string or null",
+      "facts": [
+        {{
+          "fact_id": "string",
+          "category": "personal_contact",
+          "entity_name": "contact type",
+          "fact_text": "complete factual sentence",
+          "verified": true,
+          "source_location": "user_input"
+        }}
+      ]
+    }}
+  ],
+  "education_experiences": [
+    {{
+      "education_experience_id": "string",
       "school": "string",
       "degree": "string or null",
       "major": "string or null",
       "start_date": "string or null",
-      "end_date": "string or null"
+      "end_date": "string or null",
+      "facts": [
+        {{
+          "fact_id": "string",
+          "category": "education_experience",
+          "entity_name": "school name",
+          "fact_text": "complete factual sentence",
+          "verified": true,
+          "source_location": "user_input"
+        }}
+      ]
     }}
   ],
   "skills": [

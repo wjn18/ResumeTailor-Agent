@@ -70,6 +70,12 @@ class FormalEducation(BaseModel):
     end_date: Optional[str] = None
 
 
+class FormalPersonalContact(BaseModel):
+    contact_type: str
+    contact_value: str
+    label: Optional[str] = None
+
+
 class FormalProject(BaseModel):
     name: str
     role: Optional[str] = None
@@ -99,6 +105,8 @@ class FormalResumeDocument(BaseModel):
     headline: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    personal_contacts: list[FormalPersonalContact] = Field(default_factory=list)
+    education_experiences: list[FormalEducation] = Field(default_factory=list)
     advantages: list[str] = Field(default_factory=list, max_length=6)
     work_experiences: list[FormalWorkExperience] = Field(default_factory=list)
     honor_awards: list[FormalHonorAward] = Field(default_factory=list)

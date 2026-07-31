@@ -47,7 +47,15 @@ class DeepSeekResumeParser(DeepSeekJSONClient, ResumeLLMClient):
             parsed_data,
             resume_text,
         )
-        if missing_work or missing_honors:
+        missing_education = _education_experience_parse_incomplete(
+            parsed_data,
+            resume_text,
+        )
+        missing_contacts = _personal_contact_parse_incomplete(
+            parsed_data,
+            resume_text,
+        )
+        if missing_work or missing_honors or missing_education or missing_contacts:
             correction_requirements = []
             if missing_work:
                 correction_requirements.append(
@@ -60,6 +68,18 @@ class DeepSeekResumeParser(DeepSeekJSONClient, ResumeLLMClient):
                     "The resume contains an explicit honors or awards section. "
                     "Extract each award into honor_awards with its exact name, "
                     "issuer, date, and atomic facts."
+                )
+            if missing_education:
+                correction_requirements.append(
+                    "The resume contains explicit education information. Extract "
+                    "each school into education_experiences with exact degree, "
+                    "major, dates, and an atomic education fact."
+                )
+            if missing_contacts:
+                correction_requirements.append(
+                    "The resume contains explicit contact information. Extract "
+                    "each item into personal_contacts with its exact type, value, "
+                    "optional label, and an atomic contact fact."
                 )
             parsed_data = self.request_json(
                 system_prompt=(
@@ -160,7 +180,15 @@ Fact extraction rules:
   are explicitly present. Never invent a result or metric.
 - Prefer 3-6 atomic facts for a detailed project instead of one oversized fact.
 - Keep every fact_id unique across experience_facts, work facts, award facts,
-  and project facts.
+  education facts, personal-contact facts, and project facts.
+- Put education content in education_experiences. Preserve the exact school,
+  degree, major, start date, and end date; use null when a field is not stated.
+- Education facts must stay under their education_experience and must not be
+  duplicated in the top-level experience_facts array.
+- Put email, phone, website, location, GitHub, LinkedIn, WeChat, and other
+  explicit contact details in personal_contacts. Preserve values exactly.
+- Personal-contact facts must stay under their personal_contact and must not be
+  duplicated in the top-level experience_facts array.
 - Put employment content in work_experiences. Extract company, job title, start
   date, and end date exactly as written; use null when a field is not stated.
 - Work facts must stay under their work_experience and must not be duplicated in
@@ -184,15 +212,42 @@ Return valid JSON matching this shape:
 {{
   "resume_id": "string",
   "name": "string or null",
-  "email": "string or null",
-  "phone": "string or null",
-  "education": [
+  "personal_contacts": [
     {{
+      "personal_contact_id": "string",
+      "contact_type": "email | phone | location | website | github | linkedin | wechat | other",
+      "contact_value": "exact contact value",
+      "label": "string or null",
+      "facts": [
+        {{
+          "fact_id": "string",
+          "category": "personal_contact",
+          "entity_name": "contact type",
+          "fact_text": "complete factual sentence",
+          "verified": true,
+          "source_location": "personal contact"
+        }}
+      ]
+    }}
+  ],
+  "education_experiences": [
+    {{
+      "education_experience_id": "string",
       "school": "string",
       "degree": "string or null",
       "major": "string or null",
       "start_date": "string or null",
-      "end_date": "string or null"
+      "end_date": "string or null",
+      "facts": [
+        {{
+          "fact_id": "string",
+          "category": "education_experience",
+          "entity_name": "school name",
+          "fact_text": "complete factual sentence",
+          "verified": true,
+          "source_location": "education experience"
+        }}
+      ]
     }}
   ],
   "skills": [
@@ -330,6 +385,69 @@ def _honor_award_parse_incomplete(
             or not isinstance(item.get("facts"), list)
             or not item.get("facts")
             for item in honor_awards
+        )
+    )
+
+
+def _education_experience_parse_incomplete(
+    parsed_data: dict,
+    resume_text: str,
+) -> bool:
+    has_education = bool(
+        re.search(
+            (
+                r"教育经历|教育背景|学历|毕业院校|学校|大学|学院|"
+                r"education|university|college|bachelor|master|phd"
+            ),
+            resume_text,
+            re.IGNORECASE,
+        )
+    )
+    if not has_education:
+        return False
+    education_experiences = parsed_data.get("education_experiences")
+    return (
+        not isinstance(education_experiences, list)
+        or not education_experiences
+        or any(
+            not isinstance(item, dict)
+            or not str(item.get("school", "")).strip()
+            or not isinstance(item.get("facts"), list)
+            or not item.get("facts")
+            for item in education_experiences
+        )
+    )
+
+
+def _personal_contact_parse_incomplete(
+    parsed_data: dict,
+    resume_text: str,
+) -> bool:
+    has_contact = bool(
+        re.search(
+            (
+                r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+|"
+                r"(?:\+?\d[\d\s-]{7,}\d)|"
+                r"github(?:\.com|：|:)|linkedin(?:\.com|：|:)|"
+                r"邮箱|电话|手机|联系方式"
+            ),
+            resume_text,
+            re.IGNORECASE,
+        )
+    )
+    if not has_contact:
+        return False
+    personal_contacts = parsed_data.get("personal_contacts")
+    return (
+        not isinstance(personal_contacts, list)
+        or not personal_contacts
+        or any(
+            not isinstance(item, dict)
+            or not str(item.get("contact_type", "")).strip()
+            or not str(item.get("contact_value", "")).strip()
+            or not isinstance(item.get("facts"), list)
+            or not item.get("facts")
+            for item in personal_contacts
         )
     )
 

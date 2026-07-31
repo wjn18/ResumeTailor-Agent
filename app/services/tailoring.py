@@ -9,6 +9,7 @@ from app.schemas.tailoring import (
     FactCheckReport,
     FormalEducation,
     FormalHonorAward,
+    FormalPersonalContact,
     FormalProject,
     FormalResumeDocument,
     FormalWorkExperience,
@@ -635,6 +636,24 @@ def assemble_formal_resume(
         headline=revised_draft.headline or jd.job_title,
         email=resume.email,
         phone=resume.phone,
+        personal_contacts=[
+            FormalPersonalContact(
+                contact_type=contact.contact_type,
+                contact_value=contact.contact_value,
+                label=contact.label,
+            )
+            for contact in resume.personal_contacts
+        ],
+        education_experiences=[
+            FormalEducation(
+                school=education.school,
+                degree=education.degree,
+                major=education.major,
+                start_date=education.start_date,
+                end_date=education.end_date,
+            )
+            for education in resume.education_experiences
+        ],
         advantages=[
             sentence.sentence
             for sentence in revised_draft.summary
@@ -1002,6 +1021,8 @@ def validate_fact_check_report(
 
 def collect_resume_facts(resume: ParsedResume) -> list[ExperienceFact]:
     facts = list(resume.experience_facts)
+    for education_experience in resume.education_experiences:
+        facts.extend(education_experience.facts)
     for work_experience in resume.work_experiences:
         facts.extend(work_experience.facts)
     for honor_award in resume.honor_awards:
