@@ -3,17 +3,30 @@ import ipaddress
 import json
 import re
 import socket
+from typing import Callable
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, UnicodeDammit
 import httpx
+from playwright.sync_api import (
+    Error as PlaywrightError,
+    Request as PlaywrightRequest,
+    Route as PlaywrightRoute,
+    TimeoutError as PlaywrightTimeoutError,
+    sync_playwright,
+)
 
 from app.schemas.jds import ExtractedJDText
 
 
 MAX_REDIRECTS = 4
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_BROWSER_HTML_BYTES = 5 * 1024 * 1024
 MIN_EXTRACTED_TEXT_LENGTH = 80
+BROWSER_NAVIGATION_TIMEOUT_MS = 25_000
+BROWSER_NETWORK_IDLE_TIMEOUT_MS = 6_000
+BROWSER_RENDER_SETTLE_MS = 1_500
+BROWSER_CONTENT_RETRIES = 4
 ALLOWED_CONTENT_TYPES = (
     "text/html",
     "application/xhtml+xml",
@@ -30,6 +43,25 @@ USER_AGENT = (
     "Mozilla/5.0 (compatible; ResumeTailor-JDExtractor/0.1; "
     "+https://github.com/wjn18/ResumeTailor-Agent)"
 )
+VERIFICATION_SELECTORS = (
+    "iframe[src*='captcha']",
+    "[class*='captcha']",
+    "[id*='captcha']",
+    "[class*='verify']",
+    "[id*='verify']",
+)
+VERIFICATION_TEXT_MARKERS = (
+    "安全验证",
+    "请完成验证",
+    "点击验证",
+    "滑动验证",
+    "访问过于频繁",
+    "异常访问",
+    "captcha",
+    "verify you are human",
+)
+
+BrowserRenderer = Callable[[str], ExtractedJDText]
 
 
 class JDURLSecurityError(ValueError):
@@ -41,6 +73,30 @@ class JDPageFetchError(RuntimeError):
 
 
 def extract_jd_text_from_url(
+    source_url: str,
+    client: httpx.Client | None = None,
+    browser_renderer: BrowserRenderer | None = None,
+    use_browser_fallback: bool = True,
+) -> ExtractedJDText:
+    try:
+        return _extract_jd_text_with_http(source_url, client)
+    except JDPageFetchError as static_error:
+        if not use_browser_fallback:
+            raise
+
+        renderer = browser_renderer or _extract_jd_text_with_browser
+        try:
+            return renderer(source_url)
+        except JDURLSecurityError:
+            raise
+        except JDPageFetchError as browser_error:
+            raise JDPageFetchError(
+                "静态抓取失败："
+                f"{static_error} 浏览器渲染抓取失败：{browser_error}"
+            ) from browser_error
+
+
+def _extract_jd_text_with_http(
     source_url: str,
     client: httpx.Client | None = None,
 ) -> ExtractedJDText:
@@ -99,6 +155,212 @@ def extract_jd_text_from_url(
             client.close()
 
     raise JDPageFetchError("网页抓取未返回结果。")
+
+
+def _extract_jd_text_with_browser(source_url: str) -> ExtractedJDText:
+    validated_url = _validate_public_url(source_url)
+    validated_hosts: set[tuple[str, int]] = set()
+
+    try:
+        with sync_playwright() as playwright:
+            browser = _launch_browser(playwright)
+            try:
+                context = browser.new_context(
+                    locale="zh-CN",
+                    viewport={"width": 1440, "height": 1000},
+                )
+                page = context.new_page()
+                navigation_urls: list[str] = []
+                page.on(
+                    "framenavigated",
+                    lambda frame: (
+                        navigation_urls.append(frame.url)
+                        if frame == page.main_frame
+                        else None
+                    ),
+                )
+                page.route(
+                    "**/*",
+                    lambda route, request: _handle_browser_request(
+                        route,
+                        request,
+                        validated_hosts,
+                    ),
+                )
+                response = page.goto(
+                    str(validated_url),
+                    wait_until="domcontentloaded",
+                    timeout=BROWSER_NAVIGATION_TIMEOUT_MS,
+                )
+                if response is not None and response.status >= 400:
+                    raise JDPageFetchError(
+                        f"浏览器访问目标网页时返回 HTTP {response.status}。"
+                    )
+
+                try:
+                    page.wait_for_load_state(
+                        "networkidle",
+                        timeout=BROWSER_NETWORK_IDLE_TIMEOUT_MS,
+                    )
+                except PlaywrightTimeoutError:
+                    pass
+                page.wait_for_timeout(BROWSER_RENDER_SETTLE_MS)
+
+                if any(
+                    _is_verification_url(url)
+                    for url in (*navigation_urls, page.url)
+                ):
+                    raise JDPageFetchError(
+                        "目标网站跳转到了安全验证页面，需要人工验证。"
+                    )
+                if not page.url.startswith(("http://", "https://")):
+                    raise JDPageFetchError(
+                        "浏览器未停留在可读取的 HTTP/HTTPS 页面，"
+                        f"最终地址为 {page.url!r}。"
+                    )
+
+                html = _read_stable_page_content(page)
+                final_url = str(_validate_public_url(page.url))
+                if len(html.encode("utf-8")) > MAX_BROWSER_HTML_BYTES:
+                    raise JDPageFetchError(
+                        "浏览器渲染后的网页超过 5 MB，已停止提取。"
+                    )
+
+                page_title, raw_text, method = _extract_page_text(
+                    html.encode("utf-8"),
+                    "text/html; charset=utf-8",
+                )
+                verification_message = _detect_verification_page(
+                    page,
+                    page_title,
+                    raw_text,
+                )
+                if verification_message:
+                    raise JDPageFetchError(verification_message)
+                if len(raw_text) < MIN_EXTRACTED_TEXT_LENGTH:
+                    raise JDPageFetchError(
+                        "浏览器已完成页面渲染，但仍未识别到可用的岗位描述文本。"
+                    )
+
+                return ExtractedJDText(
+                    source_url=source_url,
+                    final_url=final_url,
+                    page_title=page_title,
+                    raw_text=raw_text,
+                    text_length=len(raw_text),
+                    extraction_method=f"playwright_{method}",
+                    fetched_at=datetime.now(timezone.utc),
+                )
+            finally:
+                browser.close()
+    except JDPageFetchError:
+        raise
+    except PlaywrightTimeoutError as exc:
+        raise JDPageFetchError("浏览器等待网页渲染超时。") from exc
+    except PlaywrightError as exc:
+        message = str(exc)
+        if "Executable doesn't exist" in message:
+            raise JDPageFetchError(
+                "未安装 Chromium，请运行 "
+                "`uv run playwright install chromium`。"
+            ) from exc
+        raise JDPageFetchError(f"浏览器抓取失败：{message}") from exc
+
+
+def _read_stable_page_content(page) -> str:
+    for attempt in range(BROWSER_CONTENT_RETRIES):
+        try:
+            return page.content()
+        except PlaywrightError as exc:
+            if "page is navigating" not in str(exc).casefold():
+                raise
+            if attempt == BROWSER_CONTENT_RETRIES - 1:
+                break
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=5_000)
+            except PlaywrightTimeoutError:
+                pass
+            page.wait_for_timeout(500)
+    raise JDPageFetchError(
+        "目标网页持续跳转或刷新，无法取得稳定的页面内容。"
+    )
+
+
+def _launch_browser(playwright):
+    try:
+        return playwright.chromium.launch(headless=True)
+    except PlaywrightError as bundled_error:
+        if "Executable doesn't exist" not in str(bundled_error):
+            raise
+        try:
+            return playwright.chromium.launch(channel="chrome", headless=True)
+        except PlaywrightError as system_error:
+            raise JDPageFetchError(
+                "未找到可用的 Chromium 或 Google Chrome，请运行 "
+                "`uv run playwright install chromium`。"
+            ) from system_error
+
+
+def _handle_browser_request(
+    route: PlaywrightRoute,
+    request: PlaywrightRequest,
+    validated_hosts: set[tuple[str, int]],
+) -> None:
+    request_url = request.url
+    try:
+        parsed_url = httpx.URL(request_url)
+    except (TypeError, ValueError):
+        route.abort("blockedbyclient")
+        return
+
+    if parsed_url.scheme in {"about", "blob", "data"}:
+        route.continue_()
+        return
+    if parsed_url.scheme not in {"http", "https"}:
+        route.abort("blockedbyclient")
+        return
+
+    port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+    host_key = (parsed_url.host.rstrip(".").casefold(), port)
+    try:
+        if host_key not in validated_hosts:
+            _validate_public_url(request_url)
+            validated_hosts.add(host_key)
+    except JDURLSecurityError:
+        route.abort("blockedbyclient")
+        return
+    route.continue_()
+
+
+def _is_verification_url(url: str) -> bool:
+    normalized = url.casefold()
+    return any(
+        marker in normalized
+        for marker in (
+            "/security.",
+            "/captcha",
+            "/verify",
+            "challenge",
+        )
+    )
+
+
+def _detect_verification_page(
+    page,
+    page_title: str | None,
+    raw_text: str,
+) -> str | None:
+    combined_text = f"{page_title or ''}\n{raw_text}".casefold()
+    if any(marker.casefold() in combined_text for marker in VERIFICATION_TEXT_MARKERS):
+        return "目标网站返回了安全验证或访问频率限制页面，需要人工验证。"
+
+    for selector in VERIFICATION_SELECTORS:
+        try:
+            if page.locator(selector).count() > 0:
+                return "目标网站返回了验证码页面，需要人工验证。"
+        except PlaywrightError:
+            continue
+    return None
 
 
 def _fetch_response(
@@ -360,6 +622,8 @@ def _extract_visible_job_text(
         "#job-description",
         "[id*='job-description']",
         "[class*='job-description']",
+        "[class*='job-content']",
+        "[class*='job-sec']",
         "[id*='job_detail']",
         "[class*='job-detail']",
         "main",

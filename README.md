@@ -25,7 +25,22 @@ curl -X POST http://127.0.0.1:8000/jds/extract-url \
 
 响应中的 `raw_text` 可以由调用方确认或修改，后续再提交给 `/jds/parse`。
 第一版优先读取网页中的 `JobPosting` JSON-LD，否则提取可见的岗位正文。
-仅允许公开的 HTTP/HTTPS 网页，不支持登录、验证码或反爬绕过。
+如果静态网页没有正文，会自动启动 Playwright Chromium，等待 JavaScript
+渲染后再次提取。成功时 `extraction_method` 为 `playwright_json_ld` 或
+`playwright_html`。仅允许公开的 HTTP/HTTPS 网页；如果网站返回登录、
+验证码或安全验证页面，接口会明确报错，不会绕过验证。
+
+首次使用浏览器抓取前安装 Chromium：
+
+```bash
+uv sync
+uv run playwright install chromium
+```
+
+本地如果已经安装 Google Chrome，代码会在专用 Chromium 不可用时自动使用
+系统 Chrome。服务器环境通常没有系统 Chrome，因此部署时仍需执行上述安装。
+Chromium 本地运行包不提交到 Git。部署 `crawler` 分支时也必须在部署环境
+安装 Chromium 及其系统依赖；当前 `FastAPI` 分支的线上服务不包含该接口。
 
 正式简历依次展示个人优势、工作经历、项目经历、荣誉奖项、教育背景和相关技能。
 个人优势按岗位适配度排序，最多保留 6 条，并结合工作或项目事实佐证；

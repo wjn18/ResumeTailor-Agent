@@ -1,11 +1,15 @@
 import unittest
+from datetime import datetime, timezone
 
 import httpx
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.schemas.jds import ExtractedJDText
 from app.services.jd_web_extractor import (
+    JDPageFetchError,
     JDURLSecurityError,
+    _is_verification_url,
     extract_jd_text_from_url,
 )
 
@@ -114,6 +118,70 @@ class JDWebExtractorTests(unittest.TestCase):
                 PUBLIC_URL,
                 client=_mock_client(handler),
             )
+
+    def test_uses_browser_renderer_when_static_html_is_too_short(self):
+        client = _mock_client(
+            lambda _request: httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><body><main>Loading...</main></body></html>",
+            )
+        )
+        rendered_urls = []
+
+        def render_with_browser(source_url: str) -> ExtractedJDText:
+            rendered_urls.append(source_url)
+            raw_text = (
+                "软件开发工程师\n岗位职责\n负责后端接口开发、测试和线上问题排查。\n"
+                "任职要求\n熟悉 Python、FastAPI 和 MySQL，具备良好的沟通能力。"
+            )
+            return ExtractedJDText(
+                source_url=source_url,
+                final_url=source_url,
+                page_title="软件开发工程师",
+                raw_text=raw_text,
+                text_length=len(raw_text),
+                extraction_method="playwright_html",
+                fetched_at=datetime.now(timezone.utc),
+            )
+
+        result = extract_jd_text_from_url(
+            PUBLIC_URL,
+            client=client,
+            browser_renderer=render_with_browser,
+        )
+
+        self.assertEqual(rendered_urls, [PUBLIC_URL])
+        self.assertEqual(result.extraction_method, "playwright_html")
+        self.assertIn("FastAPI", result.raw_text)
+
+    def test_can_disable_browser_fallback(self):
+        client = _mock_client(
+            lambda _request: httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><body>Loading...</body></html>",
+            )
+        )
+
+        with self.assertRaisesRegex(JDPageFetchError, "网页正文过短"):
+            extract_jd_text_from_url(
+                PUBLIC_URL,
+                client=client,
+                use_browser_fallback=False,
+            )
+
+    def test_recognizes_security_navigation_url(self):
+        self.assertTrue(
+            _is_verification_url(
+                "https://www.zhipin.com/web/passport/zp/security.html"
+            )
+        )
+        self.assertFalse(
+            _is_verification_url(
+                "https://example.com/jobs/software-engineer"
+            )
+        )
 
     def test_http_endpoint_exposes_security_error(self):
         response = TestClient(app).post(
