@@ -1,9 +1,11 @@
 from uuid import uuid4
 
 from app.schemas.resumes import (
+    EducationExperience,
     ExperienceFact,
     HonorAward,
     ParsedResume,
+    PersonalContact,
     Project,
     SourceDocument,
     WorkExperience,
@@ -91,6 +93,44 @@ def _normalize_user_fact_source(
             )
         )
 
+    education_experiences = []
+    for education_number, education_experience in enumerate(
+        parsed_resume.education_experiences,
+        start=1,
+    ):
+        education_experiences.append(
+            education_experience.model_copy(
+                update={
+                    "education_experience_id": (
+                        f"education_user_{token}_{education_number:03d}"
+                    ),
+                    "facts": [
+                        normalize_fact(fact)
+                        for fact in education_experience.facts
+                    ],
+                }
+            )
+        )
+
+    personal_contacts = []
+    for contact_number, personal_contact in enumerate(
+        parsed_resume.personal_contacts,
+        start=1,
+    ):
+        personal_contacts.append(
+            personal_contact.model_copy(
+                update={
+                    "personal_contact_id": (
+                        f"contact_user_{token}_{contact_number:03d}"
+                    ),
+                    "facts": [
+                        normalize_fact(fact)
+                        for fact in personal_contact.facts
+                    ],
+                }
+            )
+        )
+
     honor_awards = []
     for honor_number, honor_award in enumerate(
         parsed_resume.honor_awards,
@@ -140,6 +180,8 @@ def _normalize_user_fact_source(
 
     return parsed_resume.model_copy(
         update={
+            "education_experiences": education_experiences,
+            "personal_contacts": personal_contacts,
             "work_experiences": work_experiences,
             "honor_awards": honor_awards,
             "projects": projects,
@@ -160,6 +202,14 @@ def _merge_user_facts(
             "phone": existing_resume.phone or user_facts.phone,
             "education": _deduplicate_models(
                 existing_resume.education + user_facts.education
+            ),
+            "education_experiences": _merge_education_experiences(
+                existing_resume.education_experiences,
+                user_facts.education_experiences,
+            ),
+            "personal_contacts": _merge_personal_contacts(
+                existing_resume.personal_contacts,
+                user_facts.personal_contacts,
             ),
             "skills": _deduplicate_skills(
                 existing_resume.skills + user_facts.skills
@@ -228,6 +278,76 @@ def _deduplicate_skills(skills: list) -> list:
             }
         )
     return unique_skills
+
+
+def _merge_education_experiences(
+    existing_items: list[EducationExperience],
+    new_items: list[EducationExperience],
+) -> list[EducationExperience]:
+    merged_items = list(existing_items)
+    indexes = {
+        _education_identity(item): index
+        for index, item in enumerate(merged_items)
+    }
+    for item in new_items:
+        identity = _education_identity(item)
+        existing_index = indexes.get(identity)
+        if existing_index is None:
+            indexes[identity] = len(merged_items)
+            merged_items.append(item)
+            continue
+        existing = merged_items[existing_index]
+        merged_items[existing_index] = existing.model_copy(
+            update={
+                "degree": existing.degree or item.degree,
+                "major": existing.major or item.major,
+                "start_date": existing.start_date or item.start_date,
+                "end_date": existing.end_date or item.end_date,
+                "facts": _deduplicate_facts(existing.facts + item.facts),
+            }
+        )
+    return merged_items
+
+
+def _education_identity(item: EducationExperience) -> tuple[str, str, str]:
+    return (
+        item.school.strip().casefold(),
+        (item.degree or "").strip().casefold(),
+        (item.major or "").strip().casefold(),
+    )
+
+
+def _merge_personal_contacts(
+    existing_items: list[PersonalContact],
+    new_items: list[PersonalContact],
+) -> list[PersonalContact]:
+    merged_items = list(existing_items)
+    indexes = {
+        _contact_identity(item): index
+        for index, item in enumerate(merged_items)
+    }
+    for item in new_items:
+        identity = _contact_identity(item)
+        existing_index = indexes.get(identity)
+        if existing_index is None:
+            indexes[identity] = len(merged_items)
+            merged_items.append(item)
+            continue
+        existing = merged_items[existing_index]
+        merged_items[existing_index] = existing.model_copy(
+            update={
+                "label": existing.label or item.label,
+                "facts": _deduplicate_facts(existing.facts + item.facts),
+            }
+        )
+    return merged_items
+
+
+def _contact_identity(item: PersonalContact) -> tuple[str, str]:
+    return (
+        item.contact_type.strip().casefold(),
+        item.contact_value.strip().casefold(),
+    )
 
 
 def _merge_work_experiences(

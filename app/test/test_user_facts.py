@@ -7,9 +7,11 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.schemas.resumes import (
+    EducationExperience,
     ExperienceFact,
     HonorAward,
     ParsedResume,
+    PersonalContact,
     Project,
     SourceDocument,
     WorkExperience,
@@ -87,6 +89,48 @@ class HonorFactParser(UserFactLLMClient):
                             category="honor_award",
                             entity_name="优秀毕业设计",
                             fact_text=user_text,
+                        )
+                    ],
+                )
+            ],
+        ).model_dump()
+
+
+class ProfileFactParser(UserFactLLMClient):
+    def parse_user_facts(self, user_text, source_document):
+        return ParsedResume(
+            resume_id="resume_from_model",
+            source_document=source_document,
+            education_experiences=[
+                EducationExperience(
+                    education_experience_id="education_from_model",
+                    school="示例大学",
+                    degree="本科",
+                    major="计算机科学",
+                    start_date="2020.09",
+                    end_date="2024.06",
+                    facts=[
+                        ExperienceFact(
+                            fact_id="fact_education_model",
+                            category="education_experience",
+                            entity_name="示例大学",
+                            fact_text="在示例大学完成计算机科学本科学习。",
+                        )
+                    ],
+                )
+            ],
+            personal_contacts=[
+                PersonalContact(
+                    personal_contact_id="contact_from_model",
+                    contact_type="github",
+                    contact_value="https://github.com/example",
+                    label="GitHub",
+                    facts=[
+                        ExperienceFact(
+                            fact_id="fact_contact_model",
+                            category="personal_contact",
+                            entity_name="github",
+                            fact_text="GitHub：https://github.com/example",
                         )
                     ],
                 )
@@ -294,6 +338,52 @@ class UserFactParserTests(unittest.TestCase):
                 self.assertEqual(
                     honor.facts[0].source_location,
                     "user_input:user_input",
+                )
+
+    def test_normalizes_and_merges_education_and_personal_contacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            existing = ParsedResume(
+                resume_id="resume_existing",
+                email="existing@example.com",
+            )
+
+            with patch("app.services.resume_parser.RESUME_DATA_DIR", data_dir):
+                from app.services.resume_parser import save_parsed_resume
+
+                save_parsed_resume(existing)
+                result = parse_user_fact_text_to_json(
+                    "本科毕业于示例大学，GitHub 是 https://github.com/example",
+                    resume_id=existing.resume_id,
+                    parser_client=ProfileFactParser(),
+                )
+
+                education = result.education_experiences[0]
+                self.assertEqual(education.school, "示例大学")
+                self.assertTrue(
+                    education.education_experience_id.startswith(
+                        "education_user_"
+                    )
+                )
+                self.assertTrue(
+                    education.facts[0].fact_id.startswith("fact_user_")
+                )
+
+                contact_types = {
+                    contact.contact_type
+                    for contact in result.personal_contacts
+                }
+                self.assertEqual(contact_types, {"email", "github"})
+                github = next(
+                    contact
+                    for contact in result.personal_contacts
+                    if contact.contact_type == "github"
+                )
+                self.assertTrue(
+                    github.personal_contact_id.startswith("contact_user_")
+                )
+                self.assertTrue(
+                    github.facts[0].fact_id.startswith("fact_user_")
                 )
 
 

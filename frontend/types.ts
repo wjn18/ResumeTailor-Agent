@@ -16,6 +16,12 @@ export type FormalEducation = {
   end_date: string | null;
 };
 
+export type FormalPersonalContact = {
+  contact_type: string;
+  contact_value: string;
+  label: string | null;
+};
+
 export type FormalProject = {
   name: string;
   role: string | null;
@@ -45,6 +51,8 @@ export type FormalResume = {
   headline: string | null;
   email: string | null;
   phone: string | null;
+  personal_contacts: FormalPersonalContact[];
+  education_experiences: FormalEducation[];
   advantages: string[];
   work_experiences: FormalWorkExperience[];
   honor_awards: FormalHonorAward[];
