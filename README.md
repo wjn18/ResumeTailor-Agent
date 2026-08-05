@@ -25,10 +25,12 @@
 
 ## 本地启动
 
-后端需要 Python 3.14 和 `DEEPSEEK_API_KEY`：
+后端需要 Python 3.14、PostgreSQL、`DATABASE_URL` 和 `DEEPSEEK_API_KEY`：
 
 ```bash
 uv sync
+export DATABASE_URL="postgresql://resume_tailor:password@localhost:5432/resume_tailor"
+uv run python -m databae.init_database
 export DEEPSEEK_API_KEY="你的 DeepSeek API Key"
 .venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
@@ -63,8 +65,28 @@ npm run dev
 5. Netlify 会读取 `netlify.toml` 中已配置的 Render 后端地址，直接部署。
 6. 打开 `https://resume-tailor-agent.netlify.app` 测试完整生成流程。
 
-免费 Render 服务休眠或重新部署时会清除本地运行数据。当前版本仍可完成
-上传、生成、预览和立即下载，但保存的简历与解析 JSON 不保证长期保留。
+解析后的简历、JD 和定制简历以 PostgreSQL JSONB 文档持久化。上传文件和
+生成的 DOCX 是临时文件；DOCX 下载接口会根据数据库中的正式简历重新生成文件。
+
+## 从 SQLite 和 JSON 文件迁移
+
+设置目标 PostgreSQL 的 `DATABASE_URL` 后执行：
+
+```bash
+uv run python -m databae.migrate_to_postgres
+```
+
+脚本会导入旧的 `databae/resume_tailor.sqlite3`，以及原先保存在
+`app/data/resumes`、`app/data/job_descriptions` 和
+`app/data/tailored_resumes` 中的 JSON 文件。迁移脚本可重复执行；已有主键记录
+不会重复创建，文档记录会按业务 ID 更新。
+
+## LangGraph Phase 1
+
+核心定制流程已经迁移为状态图：岗位匹配、初稿生成、事实审核、条件修订和
+最终复核。现有 API 响应保持不变；单元测试使用内存 checkpointer。后续
+human-in-the-loop 阶段会把 checkpointer 切换为 PostgreSQL，并在正式简历确认前
+增加可恢复的 interrupt。
 
 ## 测试
 

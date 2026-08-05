@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Any, Optional
 
 
 class UserCreate(BaseModel):
@@ -20,14 +20,14 @@ class UserRead(UserCreate):
 class OriginalResumeCreate(BaseModel):
     user_id: int
     file_path: str
-    parsed_content_json: Optional[str] = None
+    parsed_content_json: Optional[Any] = None
     version: int = 1
 
 
 class OriginalResumePatch(BaseModel):
     user_id: Optional[int] = None
     file_path: Optional[str] = None
-    parsed_content_json: Optional[str] = None
+    parsed_content_json: Optional[Any] = None
     version: Optional[int] = None
 
 
@@ -64,7 +64,7 @@ class JobDescriptionCreate(BaseModel):
     company: str
     job_title: str
     raw_text: str
-    parsed_json: Optional[str] = None
+    parsed_json: Optional[Any] = None
 
 
 class JobDescriptionPatch(BaseModel):
@@ -72,7 +72,7 @@ class JobDescriptionPatch(BaseModel):
     company: Optional[str] = None
     job_title: Optional[str] = None
     raw_text: Optional[str] = None
-    parsed_json: Optional[str] = None
+    parsed_json: Optional[Any] = None
 
 
 class JobDescriptionRead(JobDescriptionCreate):
@@ -83,7 +83,7 @@ class JobDescriptionRead(JobDescriptionCreate):
 class TailoredResumeCreate(BaseModel):
     master_resume_id: int
     job_description_id: int
-    content_json: str
+    content_json: Any
     match_score: float = Field(default=0, ge=0, le=100)
     status: str = "draft"
 
@@ -91,7 +91,7 @@ class TailoredResumeCreate(BaseModel):
 class TailoredResumePatch(BaseModel):
     master_resume_id: Optional[int] = None
     job_description_id: Optional[int] = None
-    content_json: Optional[str] = None
+    content_json: Optional[Any] = None
     match_score: Optional[float] = Field(default=None, ge=0, le=100)
     status: Optional[str] = None
 
@@ -106,7 +106,7 @@ class ResumeChangeCreate(BaseModel):
     section: str
     original_text: Optional[str] = None
     new_text: str
-    source_fact_ids: Optional[str] = None
+    source_fact_ids: Optional[list[str] | str] = None
     status: str = "pending"
     user_feedback: Optional[str] = None
 
@@ -116,7 +116,7 @@ class ResumeChangePatch(BaseModel):
     section: Optional[str] = None
     original_text: Optional[str] = None
     new_text: Optional[str] = None
-    source_fact_ids: Optional[str] = None
+    source_fact_ids: Optional[list[str] | str] = None
     status: Optional[str] = None
     user_feedback: Optional[str] = None
 

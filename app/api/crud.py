@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query, Response, status
-import sqlite3
+import psycopg
 from typing import TypeVar
 
 from pydantic import BaseModel
@@ -46,7 +46,7 @@ def _get(table_name: str, item_id: int):
 def _create(table_name: str, payload: CreateModel):
     try:
         return create_row(table_name, payload.model_dump(exclude_unset=True))
-    except sqlite3.IntegrityError as exc:
+    except psycopg.IntegrityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -55,7 +55,7 @@ def _create(table_name: str, payload: CreateModel):
 def _patch(table_name: str, item_id: int, payload: PatchModel):
     try:
         row = patch_row(table_name, item_id, payload.model_dump(exclude_unset=True))
-    except sqlite3.IntegrityError as exc:
+    except psycopg.IntegrityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

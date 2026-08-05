@@ -16,6 +16,6 @@ def parse_user_fact_text(payload: UserFactTextParseRequest):
             source_name=payload.source_name,
         )
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Resume JSON not found.") from exc
+        raise HTTPException(status_code=404, detail="Resume record not found.") from exc
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

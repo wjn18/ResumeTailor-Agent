@@ -24,7 +24,7 @@ __pycache__/
 *.log
 logs/
 
-# Uploaded source resumes and generated parsed JSON
+# Legacy local uploads/exports and pre-PostgreSQL parsed JSON
 app/data/uploads/
 app/data/resumes/
 app/data/job_descriptions/
@@ -34,3 +34,7 @@ app/data/tailored_resumes/
 *.sqlite
 *.sqlite3
 *.db
+
+# Workspace-local uv cache
+.uv-cache/
+.npm-cache/

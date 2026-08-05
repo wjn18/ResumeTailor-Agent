@@ -1,29 +1,20 @@
-import json
-from pathlib import Path
-
 from app.schemas.jds import ParsedJD
+from app.services.database import load_json_document, upsert_json_document
 from app.services.jd_llm_client import DeepSeekJDParser, JDLLMClient
 
 
-JD_DATA_DIR = Path("app/data/job_descriptions")
-
-
-def save_parsed_jd(parsed_jd: ParsedJD) -> Path:
-    JD_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    file_path = JD_DATA_DIR / f"{parsed_jd.jd_id}.json"
-
-    with file_path.open("w", encoding="utf-8") as file:
-        json.dump(parsed_jd.model_dump(), file, ensure_ascii=False, indent=2)
-
-    return file_path
+def save_parsed_jd(parsed_jd: ParsedJD) -> str:
+    upsert_json_document(
+        "parsed_jd_documents",
+        "jd_id",
+        parsed_jd.jd_id,
+        parsed_jd.model_dump(mode="json"),
+    )
+    return parsed_jd.jd_id
 
 
 def load_parsed_jd(jd_id: str) -> ParsedJD:
-    file_path = JD_DATA_DIR / f"{jd_id}.json"
-
-    with file_path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-
+    data = load_json_document("parsed_jd_documents", "jd_id", jd_id)
     return ParsedJD.model_validate(data)
 
 

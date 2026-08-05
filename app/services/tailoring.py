@@ -435,30 +435,9 @@ def build_tailored_resume(
     TailoredResumeDraft,
     FactCheckReport,
 ]:
-    client = client or DeepSeekTailoringClient()
-    match_report, initial_draft = build_initial_tailored_resume(
-        jd,
-        resume,
-        client=client,
-    )
-    (
-        fact_check_report,
-        revised_draft,
-        final_fact_check_report,
-    ) = review_tailored_resume(
-        jd,
-        resume,
-        match_report,
-        initial_draft,
-        client=client,
-    )
-    return (
-        match_report,
-        initial_draft,
-        fact_check_report,
-        revised_draft,
-        final_fact_check_report,
-    )
+    from app.workflows.tailoring_graph import run_tailoring_graph
+
+    return run_tailoring_graph(jd, resume, client=client or DeepSeekTailoringClient())
 
 
 def build_initial_tailored_resume(

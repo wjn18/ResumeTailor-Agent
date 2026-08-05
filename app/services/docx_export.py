@@ -1,4 +1,5 @@
 from pathlib import Path
+import tempfile
 
 from docx import Document
 from docx.enum.section import WD_SECTION
@@ -8,7 +9,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 from app.schemas.tailoring import FormalResumeDocument
-from app.services.tailored_resume_storage import TAILORED_RESUME_DATA_DIR
+TAILORED_RESUME_EXPORT_DIR = Path(tempfile.gettempdir()) / "resume_tailor_exports"
 
 
 INK = RGBColor(20, 27, 45)
@@ -22,8 +23,8 @@ def export_formal_resume_docx(
     tailored_resume_id: str,
     formal_resume: FormalResumeDocument,
 ) -> Path:
-    TAILORED_RESUME_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = TAILORED_RESUME_DATA_DIR / f"{tailored_resume_id}.docx"
+    TAILORED_RESUME_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = TAILORED_RESUME_EXPORT_DIR / f"{tailored_resume_id}.docx"
 
     document = Document()
     _configure_document(document)

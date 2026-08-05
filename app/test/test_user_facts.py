@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -139,6 +140,30 @@ class ProfileFactParser(UserFactLLMClient):
 
 
 class UserFactParserTests(unittest.TestCase):
+    def setUp(self):
+        self.documents = {}
+
+        def upsert(_table, _id_column, document_id, payload):
+            self.documents[document_id] = payload
+
+        def load(_table, _id_column, document_id):
+            if document_id not in self.documents:
+                raise FileNotFoundError(document_id)
+            return self.documents[document_id]
+
+        self.upsert_patch = patch(
+            "app.services.resume_parser.upsert_json_document", side_effect=upsert
+        )
+        self.load_patch = patch(
+            "app.services.resume_parser.load_json_document", side_effect=load
+        )
+        self.upsert_patch.start()
+        self.load_patch.start()
+
+    def tearDown(self):
+        self.upsert_patch.stop()
+        self.load_patch.stop()
+
     def test_parse_user_facts_http_endpoint(self):
         parsed_resume = ParsedResume(resume_id="resume_http_test")
 
@@ -185,8 +210,7 @@ class UserFactParserTests(unittest.TestCase):
                     result.experience_facts[0].source_location,
                     "user_input:profile",
                 )
-                saved_path = Path(temp_dir) / f"{result.resume_id}.json"
-                self.assertTrue(saved_path.exists())
+                self.assertIn(result.resume_id, self.documents)
                 self.assertTrue(
                     all(skill.proficiency for skill in result.skills)
                 )
@@ -200,7 +224,7 @@ class UserFactParserTests(unittest.TestCase):
                         for skill in result.skills
                     )
                 )
-                saved_json = saved_path.read_text(encoding="utf-8")
+                saved_json = json.dumps(self.documents[result.resume_id])
                 self.assertIn('"proficiency"', saved_json)
                 self.assertIn('"evidence_fact_ids"', saved_json)
 

@@ -25,4 +25,4 @@ def get_resume(resume_id: str):
     try:
         return load_parsed_resume(resume_id)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Resume JSON not found.") from exc
+        raise HTTPException(status_code=404, detail="Resume record not found.") from exc

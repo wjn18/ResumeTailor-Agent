@@ -24,4 +24,4 @@ def get_parsed_jd(jd_id: str):
     try:
         return load_parsed_jd(jd_id)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="JD JSON not found.") from exc
+        raise HTTPException(status_code=404, detail="JD record not found.") from exc

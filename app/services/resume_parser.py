@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 import shutil
 from uuid import uuid4
@@ -7,34 +6,27 @@ from app.schemas.resumes import ParsedResume
 from app.schemas.resumes import SourceDocument
 from app.services.document_reader import read_document_text
 from app.services.llm_client import DeepSeekResumeParser, ResumeLLMClient
+from app.services.database import load_json_document, upsert_json_document
 
 
+# Kept as a non-functional compatibility symbol for older callers/tests. Parsed
+# documents are no longer read from or written to this directory.
 RESUME_DATA_DIR = Path("app/data/resumes")
 UPLOAD_DATA_DIR = Path("app/data/uploads")
 
 
-def save_parsed_resume(parsed_resume: ParsedResume) -> Path:
-    RESUME_DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    file_path = RESUME_DATA_DIR / f"{parsed_resume.resume_id}.json"
-
-    with file_path.open("w", encoding="utf-8") as file:
-        json.dump(
-            parsed_resume.model_dump(),
-            file,
-            ensure_ascii=False,
-            indent=2,
-        )
-
-    return file_path
+def save_parsed_resume(parsed_resume: ParsedResume) -> str:
+    upsert_json_document(
+        "parsed_resume_documents",
+        "resume_id",
+        parsed_resume.resume_id,
+        parsed_resume.model_dump(mode="json"),
+    )
+    return parsed_resume.resume_id
 
 
 def load_parsed_resume(resume_id: str) -> ParsedResume:
-    file_path = RESUME_DATA_DIR / f"{resume_id}.json"
-
-    with file_path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-
+    data = load_json_document("parsed_resume_documents", "resume_id", resume_id)
     return ParsedResume.model_validate(data)
 
 

@@ -776,15 +776,19 @@ class TailoringWorkflowTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
+            stored = {}
             with (
                 patch(
                     "app.api.tailoring.review_tailored_resume",
                     return_value=(report, draft, report),
                 ),
                 patch(
-                    "app.services.tailored_resume_storage."
-                    "TAILORED_RESUME_DATA_DIR",
-                    Path(temp_dir),
+                    "app.services.tailored_resume_storage.list_tailored_resumes",
+                    return_value=[],
+                ),
+                patch(
+                    "app.services.tailored_resume_storage._write_tailored_resume",
+                    side_effect=lambda item: stored.__setitem__(item.tailored_resume_id, item),
                 ),
             ):
                 review_response = client.post(
@@ -901,13 +905,35 @@ class TailoringWorkflowTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir)
+            stored = {}
+
+            def write_item(item):
+                stored[item.tailored_resume_id] = item
+
+            def load_item(item_id):
+                if item_id not in stored:
+                    raise FileNotFoundError(item_id)
+                return stored[item_id]
+
             with (
                 patch(
-                    "app.services.tailored_resume_storage.TAILORED_RESUME_DATA_DIR",
-                    data_dir,
+                    "app.services.tailored_resume_storage.list_tailored_resumes",
+                    return_value=[],
                 ),
                 patch(
-                    "app.services.docx_export.TAILORED_RESUME_DATA_DIR",
+                    "app.services.tailored_resume_storage._write_tailored_resume",
+                    side_effect=write_item,
+                ),
+                patch(
+                    "app.services.tailored_resume_storage.load_tailored_resume",
+                    side_effect=load_item,
+                ),
+                patch(
+                    "app.api.tailoring.load_tailored_resume",
+                    side_effect=load_item,
+                ),
+                patch(
+                    "app.services.docx_export.TAILORED_RESUME_EXPORT_DIR",
                     data_dir,
                 ),
             ):

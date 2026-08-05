@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +10,16 @@ from app.api.resumes import router as resumes_router
 from app.api.tailoring import router as tailoring_router
 from app.api.user_facts import router as user_facts_router
 
-app = FastAPI()
+from databae.init_database import initialize_database
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    initialize_database()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
