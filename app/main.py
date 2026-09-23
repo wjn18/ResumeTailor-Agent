@@ -10,7 +10,7 @@ from app.api.resumes import router as resumes_router
 from app.api.tailoring import router as tailoring_router
 from app.api.user_facts import router as user_facts_router
 
-from databae.init_database import initialize_database
+from app.storage.factory import initialize_database
 
 
 @asynccontextmanager

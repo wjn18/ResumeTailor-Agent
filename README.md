@@ -68,6 +68,25 @@ npm run dev
 解析后的简历、JD 和定制简历以 PostgreSQL JSONB 文档持久化。上传文件和
 生成的 DOCX 是临时文件；DOCX 下载接口会根据数据库中的正式简历重新生成文件。
 
+## 存储架构与数据库切换
+
+业务调用链为 `api / services → services.database → Storage → 具体适配器`：
+
+- `app/storage/base.py` 定义存储接口，覆盖通用 CRUD、JSON 文档读写和定制简历保存、列表查询。
+- `app/storage/postgres.py` 和 `postgres_schema.py` 集中管理运行时 SQL、PostgreSQL 驱动、JSONB 转换与建表语句。
+- `app/storage/factory.py` 根据 `STORAGE_BACKEND` 和 `DATABASE_URL` 创建并复用适配器。应用启动与旧的 `databae.init_database` 命令共用初始化入口。
+- API 只处理数据库无关的 `StorageConflictError`；适配器将驱动完整性异常转换为该异常，对外仍返回 HTTP 409。其他驱动异常转换为 `StorageError`，原异常保留在异常链中。
+
+`STORAGE_BACKEND` 默认是 `postgresql`，现有部署无需增加配置。
+当前生产适配器只有 PostgreSQL；更换 PostgreSQL 实例时修改 `DATABASE_URL` 并迁移已有数据即可。
+接入 MySQL、SQLite 等新类型时，实现 `Storage` 的全部方法（包含初始化和异常转换），
+在工厂的 `BACKENDS` 中注册一个接收连接字符串的构造函数，再设置对应的 `STORAGE_BACKEND`。
+业务接口和简历处理流程无需随适配器修改，但数据库结构及已有数据的跨库迁移仍需单独处理。
+新适配器应返回普通字典和 JSON 值，不向业务层暴露连接、游标或驱动异常。
+
+`databae.migrate_to_postgres` 是专用于旧 SQLite/JSON 数据的 PostgreSQL 迁移工具，
+始终使用 PostgreSQL 适配器，不随应用的 `STORAGE_BACKEND` 切换。
+
 ## 从 SQLite 和 JSON 文件迁移
 
 设置目标 PostgreSQL 的 `DATABASE_URL` 后执行：
@@ -118,3 +137,21 @@ cd frontend
 npm run lint
 npm run build
 ```
+
+Windows 后端测试：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s app/test -p 'test*.py' -v
+```
+
+默认测试覆盖适配器选择、业务层解耦和异常映射，不需要数据库。
+要同时运行真实 PostgreSQL 集成测试，先设置独立测试数据库的连接字符串：
+
+```powershell
+$env:TEST_DATABASE_URL = "postgresql://test_user:password@localhost:5432/resume_tailor_test"
+.\.venv\Scripts\python.exe -m unittest discover -s app/test -p 'test*.py' -v
+```
+
+集成测试每例创建独立随机 schema，结束后删除该 schema；测试账号需要创建 schema 的权限。
+覆盖六张业务表的 CRUD、约束冲突与回滚、级联删除、JSON 文档覆盖写入、定制简历排序，
+以及简历保存、修改、确认、DOCX 下载和重新编辑流程。未设置 `TEST_DATABASE_URL` 时跳过这些集成测试。

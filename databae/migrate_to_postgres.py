@@ -11,7 +11,8 @@ import psycopg
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
-from databae.init_database import get_database_url, initialize_database
+from app.storage.factory import get_database_url
+from app.storage.postgres import PostgresStorage
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,7 +36,7 @@ JSON_COLUMNS = {
 
 def migrate() -> None:
     database_url = get_database_url()
-    initialize_database(database_url)
+    PostgresStorage(database_url).initialize()
     with psycopg.connect(database_url) as target:
         if SQLITE_PATH.exists():
             _migrate_sqlite(target)

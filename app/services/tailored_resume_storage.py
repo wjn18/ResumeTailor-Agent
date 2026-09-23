@@ -2,8 +2,6 @@ from datetime import datetime, timezone
 from uuid import uuid4
 from pathlib import Path
 
-from psycopg.types.json import Jsonb
-
 from app.schemas.jds import ParsedJD
 from app.schemas.resumes import ParsedResume
 from app.schemas.tailoring import (
@@ -14,9 +12,13 @@ from app.schemas.tailoring import (
     SavedTailoredResumeSummary,
     TailoredResumeDraft,
 )
-from app.services.database import connect
+from app.services.database import (
+    list_tailored_resume_documents,
+    load_json_document,
+    save_tailored_resume_document,
+)
 
-# Compatibility symbol only. Tailored resume JSON is stored in PostgreSQL.
+# Compatibility symbol only. Tailored resume JSON is stored through the configured backend.
 TAILORED_RESUME_DATA_DIR = Path("app/data/tailored_resumes")
 
 
@@ -53,28 +55,20 @@ def save_tailored_resume(
 
 
 def load_tailored_resume(tailored_resume_id: str) -> SavedTailoredResume:
-    with connect() as connection:
-        row = connection.execute(
-            "SELECT payload FROM tailored_resume_documents WHERE tailored_resume_id = %s",
-            (tailored_resume_id,),
-        ).fetchone()
-    if row is None:
-        raise FileNotFoundError(tailored_resume_id)
-    return SavedTailoredResume.model_validate(row["payload"])
+    payload = load_json_document(
+        "tailored_resume_documents", "tailored_resume_id", tailored_resume_id
+    )
+    return SavedTailoredResume.model_validate(payload)
 
 
 def list_tailored_resumes() -> list[SavedTailoredResumeSummary]:
-    with connect() as connection:
-        rows = connection.execute(
-            "SELECT payload FROM tailored_resume_documents ORDER BY generated_at DESC"
-        ).fetchall()
     return [
         SavedTailoredResumeSummary.model_validate({
             key: value
-            for key, value in row["payload"].items()
+            for key, value in payload.items()
             if key in SavedTailoredResumeSummary.model_fields
         })
-        for row in rows
+        for payload in list_tailored_resume_documents()
     ]
 
 
@@ -129,21 +123,4 @@ def mark_tailored_resume_confirmed(
 
 
 def _write_tailored_resume(saved_resume: SavedTailoredResume) -> None:
-    payload = saved_resume.model_dump(mode="json")
-    with connect() as connection:
-        connection.execute(
-            """INSERT INTO tailored_resume_documents
-                   (tailored_resume_id, payload, status, generated_at, updated_at)
-               VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
-               ON CONFLICT (tailored_resume_id) DO UPDATE
-               SET payload = EXCLUDED.payload,
-                   status = EXCLUDED.status,
-                   updated_at = CURRENT_TIMESTAMP""",
-            (
-                saved_resume.tailored_resume_id,
-                Jsonb(payload),
-                saved_resume.status,
-                saved_resume.generated_at,
-            ),
-        )
-        connection.commit()
+    save_tailored_resume_document(saved_resume.model_dump(mode="json"))
