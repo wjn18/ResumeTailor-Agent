@@ -2,9 +2,7 @@ import type {
   FormalResume,
   ParsedJD,
   ParsedResume,
-  RequirementMatchReport,
   SavedTailoredResume,
-  TailoredResumeDraft,
   TailoringInitialBuildResponse,
   TailoringReviewResponse,
 } from "@/types";
@@ -125,20 +123,12 @@ export async function buildInitialTailoredResume(
 }
 
 export async function reviewTailoredResume(
-  jd: ParsedJD,
-  resume: ParsedResume,
-  matchReport: RequirementMatchReport,
-  draft: TailoredResumeDraft,
+  threadId: string,
 ): Promise<TailoringReviewResponse> {
   return request<TailoringReviewResponse>("/tailoring/build/review", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({
-      jd,
-      resume,
-      match_report: matchReport,
-      draft,
-    }),
+    body: JSON.stringify({thread_id: threadId}),
   });
 }
 

@@ -195,6 +195,12 @@ class AuditedTailoringClient(TailoringLLMClient):
 
 
 class TwoPassRevisionClient(AuditedTailoringClient):
+    def revise_after_fact_check(self, jd, resume, draft, fact_check_report):
+        revised = super().revise_after_fact_check(jd, resume, draft, fact_check_report)
+        if self.revision_calls == 1:
+            revised["summary"][0]["sentence"] = "使用 FastAPI 构建高性能后端服务。"
+        return revised
+
     def fact_check_resume(self, jd_id, resume, draft):
         report = super().fact_check_resume(jd_id, resume, draft)
         if self.revision_calls < 2:
@@ -734,81 +740,51 @@ class TailoringWorkflowTests(unittest.TestCase):
         self.assertEqual(client.revision_calls, 1)
 
     def test_staged_http_endpoints_return_initial_then_reviewed_resume(self):
-        jd = sample_jd()
-        resume = sample_resume()
-        match_report = RequirementMatchReport(
-            jd_id=jd.jd_id,
-            resume_id=resume.resume_id,
-        )
-        draft = TailoredResumeDraft(
-            jd_id=jd.jd_id,
-            resume_id=resume.resume_id,
-            summary=[
-                TailoredSentence(
-                    section="advantages",
-                    sentence="使用 FastAPI 构建后端服务。",
-                    source_fact_ids=["fact_001"],
-                )
-            ],
-        )
-        report = FactCheckReport(
-            jd_id=jd.jd_id,
-            resume_id=resume.resume_id,
-        )
-        client = TestClient(app)
+        from app.workflows.tailoring_runtime import TailoringRuntime
 
-        with patch(
-            "app.api.tailoring.build_initial_tailored_resume",
-            return_value=(match_report, draft),
+        llm = AuditedTailoringClient()
+        runtime = TailoringRuntime(client=llm)
+        stored = {}
+        client = TestClient(app)
+        with (
+            patch("app.api.tailoring.get_tailoring_runtime", return_value=runtime),
+            patch("app.services.tailored_resume_storage.list_tailored_resumes", return_value=[]),
+            patch(
+                "app.services.tailored_resume_storage._write_tailored_resume",
+                side_effect=lambda item: stored.__setitem__(item.tailored_resume_id, item),
+            ),
         ):
             initial_response = client.post(
                 "/tailoring/build/initial",
-                json={
-                    "jd": jd.model_dump(),
-                    "resume": resume.model_dump(),
-                },
+                json={"jd": sample_jd().model_dump(), "resume": sample_resume().model_dump()},
             )
-
-        self.assertEqual(initial_response.status_code, 200)
-        self.assertEqual(
-            initial_response.json()["formal_resume"]["advantages"],
-            ["使用 FastAPI 构建后端服务。"],
-        )
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            stored = {}
-            with (
-                patch(
-                    "app.api.tailoring.review_tailored_resume",
-                    return_value=(report, draft, report),
-                ),
-                patch(
-                    "app.services.tailored_resume_storage.list_tailored_resumes",
-                    return_value=[],
-                ),
-                patch(
-                    "app.services.tailored_resume_storage._write_tailored_resume",
-                    side_effect=lambda item: stored.__setitem__(item.tailored_resume_id, item),
-                ),
-            ):
-                review_response = client.post(
-                    "/tailoring/build/review",
-                    json={
-                        "jd": jd.model_dump(),
-                        "resume": resume.model_dump(),
-                        "match_report": match_report.model_dump(),
-                        "draft": draft.model_dump(),
-                    },
-                )
-
-        self.assertEqual(review_response.status_code, 200)
-        self.assertEqual(
-            review_response.json()["formal_resume"]["advantages"],
-            ["使用 FastAPI 构建后端服务。"],
-        )
-        self.assertTrue(
-            review_response.json()["saved_resume"]["tailored_resume_id"]
-        )
+            self.assertEqual(initial_response.status_code, 200, initial_response.text)
+            initial = initial_response.json()
+            self.assertEqual(initial["status"], "initial_ready")
+            self.assertIn("百万用户", initial["formal_resume"]["advantages"][0])
+            self.assertEqual(llm.fact_check_calls, 0)
+            checkpoint = runtime.graph.get_state(
+                {"configurable": {"thread_id": initial["thread_id"]}}
+            )
+            self.assertEqual(checkpoint.next, ("fact_check_initial",))
+            review_response = client.post(
+                "/tailoring/build/review", json={"thread_id": initial["thread_id"]},
+            )
+            self.assertEqual(review_response.status_code, 200, review_response.text)
+            reviewed = review_response.json()
+            self.assertEqual(reviewed["status"], "awaiting_confirmation")
+            self.assertEqual(reviewed["revision_count"], 1)
+            self.assertEqual(reviewed["thread_id"], initial["thread_id"])
+            self.assertEqual(
+                reviewed["formal_resume"]["advantages"], ["使用 FastAPI 构建后端服务。"],
+            )
+            repeated = client.post(
+                "/tailoring/build/review", json={"thread_id": initial["thread_id"]},
+            )
+            self.assertEqual(repeated.json(), reviewed)
+            self.assertEqual(len(stored), 1)
+            self.assertEqual(llm.fact_check_calls, 2)
+            self.assertEqual(llm.revision_calls, 1)
 
     def test_build_runs_one_extra_revision_when_first_fix_still_fails(self):
         client = TwoPassRevisionClient()

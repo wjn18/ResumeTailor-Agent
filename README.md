@@ -83,10 +83,32 @@ uv run python -m databae.migrate_to_postgres
 
 ## LangGraph Phase 1
 
-核心定制流程已经迁移为状态图：岗位匹配、初稿生成、事实审核、条件修订和
-最终复核。现有 API 响应保持不变；单元测试使用内存 checkpointer。后续
-human-in-the-loop 阶段会把 checkpointer 切换为 PostgreSQL，并在正式简历确认前
-增加可恢复的 interrupt。
+完整生成和前端的分阶段生成共用 `app/workflows/tailoring_graph.py`：岗位匹配、
+初稿生成、事实审核、最多两次修订，以及明确的通过/待处理出口。原 Python
+服务函数保留兼容入口，但编排逻辑统一委托给图。初审通过或修订没有改变草稿时，
+复用已有审核结果，避免重复调用模型。
+
+分阶段接口协议已更新，前后端需要一起升级：
+
+1. `POST /tailoring/build/initial` 接收 `{jd, resume}`，执行至初稿节点后暂停，
+   返回 `thread_id`、`status: initial_ready`、匹配报告、初稿和预览。
+2. `POST /tailoring/build/review` 只接收 `{thread_id}`，从服务端检查点接续审核；
+   不再接收客户端回传的 JD、简历、匹配报告或草稿。
+3. 审核结果包含 `status`、`revision_count` 和最终审核报告。全部通过时为
+   `awaiting_confirmation`，并保存待确认简历；修订达到上限仍有问题时为
+   `needs_attention`、`saved_resume: null`，前端展示问题并禁止确认导出。
+4. `/tailoring/build` 一次执行同一张图，返回相同的审核状态和保存规则。
+
+`app/workflows/tailoring_runtime.py` 管理进程内任务和共享内存 checkpointer。
+同一任务并发请求返回 409；已成功审核的重复请求复用结果，不重复调用模型或保存。
+审核或保存失败后，可用原 `thread_id` 重试，从已完成的图节点继续；前端提供
+“重试审核”按钮。返回补充信息时保留原输入。任务不存在或过期返回 404。
+
+本阶段必须使用**单进程、单实例后端**（一个 Uvicorn worker）。任务在一小时无
+请求后过期并按需清理；最多保留 256 个任务，达到上限返回 503。进程重启会丢失
+未完成任务；已保存的简历仍在业务数据库中。浏览器刷新后恢复、跨实例执行、
+PostgreSQL checkpointer、持久化任务调度和用户确认 interrupt 留待后续阶段。
+用户编辑后的内容版本与复审绑定也尚未迁移到图内。
 
 ## 测试
 

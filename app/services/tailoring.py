@@ -445,15 +445,9 @@ def build_initial_tailored_resume(
     resume: ParsedResume,
     client: TailoringLLMClient | None = None,
 ) -> tuple[RequirementMatchReport, TailoredResumeDraft]:
-    client = client or DeepSeekTailoringClient()
-    match_report = match_requirements(jd, resume, client=client)
-    initial_draft = rewrite_resume(
-        jd,
-        resume,
-        match_report=match_report,
-        client=client,
-    )
-    return match_report, initial_draft
+    from app.workflows.tailoring_graph import run_initial_graph
+
+    return run_initial_graph(jd, resume, client=client or DeepSeekTailoringClient())
 
 
 def review_tailored_resume(
@@ -463,62 +457,12 @@ def review_tailored_resume(
     initial_draft: TailoredResumeDraft,
     client: TailoringLLMClient | None = None,
 ) -> tuple[FactCheckReport, TailoredResumeDraft, FactCheckReport]:
-    client = client or DeepSeekTailoringClient()
-    fact_check_report = fact_check_resume(
-        jd.jd_id,
-        resume,
-        initial_draft,
-        client=client,
+    from app.workflows.tailoring_graph import run_review_graph
+
+    return run_review_graph(
+        jd, resume, match_report, initial_draft,
+        client=client or DeepSeekTailoringClient(),
     )
-    revised_draft = revise_after_fact_check(
-        jd,
-        resume,
-        initial_draft,
-        fact_check_report,
-        client=client,
-    )
-    revised_draft = rank_and_filter_draft(
-        revised_draft,
-        match_report,
-        jd,
-        resume,
-    )
-    final_fact_check_report = fact_check_resume(
-        jd.jd_id,
-        resume,
-        revised_draft,
-        client=client,
-    )
-    if any(
-        check.support_status != SUPPORTED
-        for check in final_fact_check_report.checks
-    ):
-        revised_draft = revise_after_fact_check(
-            jd,
-            resume,
-            revised_draft,
-            final_fact_check_report,
-            client=client,
-        )
-        revised_draft = rank_and_filter_draft(
-            revised_draft,
-            match_report,
-            jd,
-            resume,
-        )
-        final_fact_check_report = fact_check_resume(
-            jd.jd_id,
-            resume,
-            revised_draft,
-            client=client,
-        )
-    revised_draft = rank_and_filter_draft(
-        revised_draft,
-        match_report,
-        jd,
-        resume,
-    )
-    return fact_check_report, revised_draft, final_fact_check_report
 
 
 def assemble_formal_resume(

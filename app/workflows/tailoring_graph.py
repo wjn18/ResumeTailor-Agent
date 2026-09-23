@@ -22,6 +22,10 @@ class TailoringState(TypedDict, total=False):
     revised_draft: dict[str, Any]
     final_fact_check_report: dict[str, Any]
     revision_count: int
+    status: str
+    review_only: bool
+    audited_draft: dict[str, Any]
+    latest_report: dict[str, Any]
 
 
 def build_tailoring_graph(client=None, checkpointer=None):
@@ -47,13 +51,22 @@ def build_tailoring_graph(client=None, checkpointer=None):
         jd, resume = models(state)
         report = RequirementMatchReport.model_validate(state["match_report"])
         draft = rewrite_resume(jd, resume, match_report=report, client=client)
-        return {"initial_draft": draft.model_dump(mode="json")}
+        return {
+            "initial_draft": draft.model_dump(mode="json"),
+            "revision_count": 0,
+            "status": "initial_ready",
+        }
 
     def initial_fact_check_node(state: TailoringState):
         jd, resume = models(state)
         draft = TailoredResumeDraft.model_validate(state["initial_draft"])
         report = fact_check_resume(jd.jd_id, resume, draft, client=client)
-        return {"fact_check_report": report.model_dump(mode="json")}
+        return {
+            "fact_check_report": report.model_dump(mode="json"),
+            "audited_draft": state["initial_draft"],
+            "latest_report": report.model_dump(mode="json"),
+            "status": "reviewing",
+        }
 
     def needs_revision(state: TailoringState):
         report = FactCheckReport.model_validate(state["fact_check_report"])
@@ -77,18 +90,31 @@ def build_tailoring_graph(client=None, checkpointer=None):
         }
 
     def keep_node(state: TailoringState):
-        return {"revised_draft": state["initial_draft"], "revision_count": 0}
+        return {
+            "revised_draft": state["initial_draft"],
+            "final_fact_check_report": state["fact_check_report"],
+            "revision_count": 0,
+        }
 
     def final_fact_check_node(state: TailoringState):
+        # An unchanged draft has the same audit; do not pay for another LLM call.
+        if state["revised_draft"] == state["audited_draft"]:
+            return {"final_fact_check_report": state["latest_report"]}
         jd, resume = models(state)
         revised = TailoredResumeDraft.model_validate(state["revised_draft"])
         report = fact_check_resume(jd.jd_id, resume, revised, client=client)
-        return {"final_fact_check_report": report.model_dump(mode="json")}
+        return {
+            "final_fact_check_report": report.model_dump(mode="json"),
+            "audited_draft": state["revised_draft"],
+            "latest_report": report.model_dump(mode="json"),
+        }
 
     def needs_follow_up_revision(state: TailoringState):
         report = FactCheckReport.model_validate(state["final_fact_check_report"])
         unsupported = any(item.support_status != SUPPORTED for item in report.checks)
-        return "revise" if unsupported and state.get("revision_count", 0) < 2 else "done"
+        if not unsupported:
+            return "approved"
+        return "revise" if state.get("revision_count", 0) < 2 else "needs_attention"
 
     builder = StateGraph(TailoringState)
     builder.add_node("match_requirements", match_node)
@@ -97,19 +123,29 @@ def build_tailoring_graph(client=None, checkpointer=None):
     builder.add_node("revise_draft", revise_node)
     builder.add_node("keep_draft", keep_node)
     builder.add_node("fact_check_final", final_fact_check_node)
-    builder.add_edge(START, "match_requirements")
+    builder.add_node("approved", lambda state: {"status": "awaiting_confirmation"})
+    builder.add_node("needs_attention", lambda state: {"status": "needs_attention"})
+    # The review-only entry is used by legacy Python service callers. HTTP callers
+    # resume the existing checkpoint instead of supplying draft state again.
+    builder.add_conditional_edges(
+        START,
+        lambda state: "review" if state.get("review_only") else "build",
+        {"review": "fact_check_initial", "build": "match_requirements"},
+    )
     builder.add_edge("match_requirements", "generate_initial_draft")
     builder.add_edge("generate_initial_draft", "fact_check_initial")
     builder.add_conditional_edges(
         "fact_check_initial", needs_revision, {"revise": "revise_draft", "keep": "keep_draft"}
     )
     builder.add_edge("revise_draft", "fact_check_final")
-    builder.add_edge("keep_draft", "fact_check_final")
+    builder.add_edge("keep_draft", "approved")
     builder.add_conditional_edges(
         "fact_check_final",
         needs_follow_up_revision,
-        {"revise": "revise_draft", "done": END},
+        {"revise": "revise_draft", "approved": "approved", "needs_attention": "needs_attention"},
     )
+    builder.add_edge("approved", END)
+    builder.add_edge("needs_attention", END)
     return builder.compile(checkpointer=checkpointer)
 
 
@@ -119,6 +155,10 @@ def run_tailoring_graph(jd: ParsedJD, resume: ParsedResume, client=None):
         {"jd": jd.model_dump(mode="json"), "resume": resume.model_dump(mode="json")},
         config={"configurable": {"thread_id": f"tailoring_{uuid4().hex}"}},
     )
+    return tailoring_result(result)
+
+
+def tailoring_result(result: TailoringState):
     return (
         RequirementMatchReport.model_validate(result["match_report"]),
         TailoredResumeDraft.model_validate(result["initial_draft"]),
@@ -126,3 +166,29 @@ def run_tailoring_graph(jd: ParsedJD, resume: ParsedResume, client=None):
         TailoredResumeDraft.model_validate(result["revised_draft"]),
         FactCheckReport.model_validate(result["final_fact_check_report"]),
     )
+
+
+def run_initial_graph(jd: ParsedJD, resume: ParsedResume, client=None):
+    graph = build_tailoring_graph(client=client, checkpointer=InMemorySaver())
+    result = graph.invoke(
+        {"jd": jd.model_dump(mode="json"), "resume": resume.model_dump(mode="json")},
+        config={"configurable": {"thread_id": uuid4().hex}},
+        interrupt_after=["generate_initial_draft"],
+    )
+    return (
+        RequirementMatchReport.model_validate(result["match_report"]),
+        TailoredResumeDraft.model_validate(result["initial_draft"]),
+    )
+
+
+def run_review_graph(jd, resume, match_report, initial_draft, client=None):
+    graph = build_tailoring_graph(client=client)
+    result = graph.invoke({
+        "jd": jd.model_dump(mode="json"),
+        "resume": resume.model_dump(mode="json"),
+        "match_report": match_report.model_dump(mode="json"),
+        "initial_draft": initial_draft.model_dump(mode="json"),
+        "revision_count": 0,
+        "review_only": True,
+    })
+    return tailoring_result(result)[2:]

@@ -36,7 +36,7 @@ import type {
 } from "@/types";
 
 type ViewState = "input" | "generating" | "preview";
-type ReviewState = "idle" | "reviewing" | "replacing" | "ready" | "error";
+type ReviewState = "idle" | "reviewing" | "replacing" | "ready" | "needs_attention" | "error";
 type GenerationStage =
   | "idle"
   | "resume"
@@ -124,6 +124,8 @@ export default function Home() {
   const [generationStage, setGenerationStage] =
     useState<GenerationStage>("idle");
   const [reviewState, setReviewState] = useState<ReviewState>("idle");
+  const [reviewIssues, setReviewIssues] = useState<string[]>([]);
+  const [reviewThreadId, setReviewThreadId] = useState<string | null>(null);
   const [updatingModule, setUpdatingModule] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -138,8 +140,10 @@ export default function Home() {
     let initialResumeIsVisible = false;
     setError(null);
     setReviewState("idle");
+    setReviewIssues([]);
     setUpdatingModule(null);
     setTailoredResumeId(null);
+    setReviewThreadId(null);
     setGenerationStage(stage);
     setView("generating");
 
@@ -170,6 +174,7 @@ export default function Home() {
       );
       if (runId !== generationRunRef.current) return;
 
+      setReviewThreadId(initialResult.thread_id);
       setFormalResume(initialResult.formal_resume);
       setView("preview");
       setReviewState("reviewing");
@@ -177,26 +182,7 @@ export default function Home() {
 
       stage = "review";
       setGenerationStage(stage);
-      const reviewResult = await reviewTailoredResume(
-        parsedJD,
-        parsedResume,
-        initialResult.match_report,
-        initialResult.draft,
-      );
-      if (runId !== generationRunRef.current) return;
-
-      setReviewState("replacing");
-      await replaceResumeModules(
-        reviewResult.formal_resume,
-        runId,
-      );
-      if (runId !== generationRunRef.current) return;
-
-      setTailoredResumeId(
-        reviewResult.saved_resume.tailored_resume_id,
-      );
-      setReviewState("ready");
-      setGenerationStage("idle");
+      await reviewAndDisplay(initialResult.thread_id, runId);
     } catch (requestError) {
       if (runId !== generationRunRef.current) return;
       setError(
@@ -213,6 +199,63 @@ export default function Home() {
         setReviewState("idle");
       }
     }
+  }
+
+  async function reviewAndDisplay(threadId: string, runId: number) {
+    const reviewResult = await reviewTailoredResume(
+      threadId,
+    );
+    if (runId !== generationRunRef.current) return;
+
+    setReviewState("replacing");
+    await replaceResumeModules(
+      reviewResult.formal_resume,
+      runId,
+    );
+    if (runId !== generationRunRef.current) return;
+
+    if (reviewResult.status === "needs_attention") {
+      setReviewIssues(
+        reviewResult.final_fact_check_report.checks
+          .filter((check) => check.support_status !== "supported")
+          .map((check) => [
+            `${check.sentence}：${check.issue || "缺少充分事实依据"}`,
+            check.suggestion,
+          ].filter(Boolean).join("；")),
+      );
+      setReviewState("needs_attention");
+    } else if (reviewResult.saved_resume) {
+      setTailoredResumeId(reviewResult.saved_resume.tailored_resume_id);
+      setReviewState("ready");
+    } else {
+      throw new Error("审核结果未保存，请重新生成。");
+    }
+    setGenerationStage("idle");
+  }
+
+  async function handleRetryReview() {
+    if (!reviewThreadId || reviewState !== "error") return;
+    const runId = ++generationRunRef.current;
+    setError(null);
+    setReviewState("reviewing");
+    setGenerationStage("review");
+    try {
+      await reviewAndDisplay(reviewThreadId, runId);
+    } catch (requestError) {
+      if (runId !== generationRunRef.current) return;
+      setError(formatRequestError("重试审核", requestError));
+      setReviewState("error");
+      setGenerationStage("idle");
+    }
+  }
+
+  function returnToInputs() {
+    generationRunRef.current += 1;
+    setView("input");
+    setReviewState("idle");
+    setGenerationStage("idle");
+    setReviewIssues([]);
+    setError(null);
   }
 
   async function replaceResumeModules(
@@ -315,7 +358,7 @@ export default function Home() {
   }
 
   async function handleComplete() {
-    if (!formalResume || !tailoredResumeId) return;
+    if (!formalResume || !tailoredResumeId || reviewState !== "ready") return;
     setIsSaving(true);
     setError(null);
     try {
@@ -346,9 +389,11 @@ export default function Home() {
     setPersonalInfo("");
     setFormalResume(null);
     setTailoredResumeId(null);
+    setReviewThreadId(null);
     setIsEditing(false);
     setGenerationStage("idle");
     setReviewState("idle");
+    setReviewIssues([]);
     setUpdatingModule(null);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -491,6 +536,15 @@ export default function Home() {
             </div>
           )}
 
+          {reviewState === "needs_attention" && (
+            <div className="review-issues" role="alert">
+              <p>自动修订后仍有内容未通过事实审核，暂时无法确认导出。请返回补充个人信息或调整输入后重新生成。</p>
+              <ul>
+                {reviewIssues.map((issue, index) => <li key={index}>{issue}</li>)}
+              </ul>
+            </div>
+          )}
+
           <ResumeEditor
             resume={formalResume}
             onChange={setFormalResume}
@@ -532,15 +586,20 @@ export default function Home() {
             </div>
           )}
 
-          {reviewState === "error" && (
+          {(reviewState === "error" || reviewState === "needs_attention") && (
             <div className="preview-actions">
+              {reviewState === "error" && reviewThreadId && (
+                <button className="primary-action" type="button" onClick={handleRetryReview}>
+                  重试审核
+                </button>
+              )}
               <button
                 className="secondary-action"
                 type="button"
-                onClick={resetWorkspace}
+                onClick={returnToInputs}
               >
                 <ChevronLeft size={18} aria-hidden />
-                返回重新生成
+                返回补充信息
               </button>
             </div>
           )}

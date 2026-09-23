@@ -77,18 +77,28 @@ export type RequirementMatchReport = Record<string, unknown>;
 export type TailoredResumeDraft = Record<string, unknown>;
 
 export type TailoringInitialBuildResponse = {
+  thread_id: string;
+  status: "initial_ready";
   match_report: RequirementMatchReport;
   draft: TailoredResumeDraft;
   formal_resume: FormalResume;
 };
 
 export type TailoringReviewResponse = {
+  thread_id: string;
+  status: "awaiting_confirmation" | "needs_attention";
+  revision_count: number;
   draft: TailoredResumeDraft;
   formal_resume: FormalResume;
-  saved_resume: SavedTailoredResume;
+  final_fact_check_report: {
+    checks: Array<{
+      sentence: string;
+      support_status: string;
+      issue: string | null;
+      suggestion: string | null;
+    }>;
+  };
+  saved_resume: SavedTailoredResume | null;
 };
 
-export type TailoringBuildResponse = {
-  formal_resume: FormalResume;
-  saved_resume: SavedTailoredResume;
-};
+export type TailoringBuildResponse = TailoringReviewResponse;

@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal, Optional
 
 from app.schemas.jds import ParsedJD
 from app.schemas.resumes import ParsedResume
@@ -142,27 +142,33 @@ class TailoringBuildRequest(BaseModel):
 
 
 class TailoringInitialBuildResponse(BaseModel):
+    thread_id: str
+    status: Literal["initial_ready"] = "initial_ready"
     match_report: RequirementMatchReport
     draft: TailoredResumeDraft
     formal_resume: FormalResumeDocument
 
 
 class TailoringReviewRequest(BaseModel):
-    jd: ParsedJD
-    resume: ParsedResume
-    match_report: RequirementMatchReport
-    draft: TailoredResumeDraft
+    model_config = ConfigDict(extra="forbid")
+    thread_id: str = Field(pattern=r"^tailoring_[0-9a-f]{32}$")
 
 
 class TailoringReviewResponse(BaseModel):
+    thread_id: str
+    status: Literal["awaiting_confirmation", "needs_attention"]
+    revision_count: int
     draft: TailoredResumeDraft
     fact_check_report: FactCheckReport
     final_fact_check_report: FactCheckReport
     formal_resume: FormalResumeDocument
-    saved_resume: "SavedTailoredResume"
+    saved_resume: Optional["SavedTailoredResume"] = None
 
 
 class TailoringBuildResponse(BaseModel):
+    thread_id: str
+    status: Literal["awaiting_confirmation", "needs_attention"]
+    revision_count: int
     match_report: RequirementMatchReport
     draft: TailoredResumeDraft
     fact_check_report: FactCheckReport
