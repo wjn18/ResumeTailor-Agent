@@ -1,6 +1,6 @@
 from app.schemas.jds import ParsedJD
 from app.services.database import load_json_document, upsert_json_document
-from app.services.jd_llm_client import DeepSeekJDParser, JDLLMClient
+from app.services.jd_llm_client import ConfiguredJDParser, JDLLMClient
 
 
 def save_parsed_jd(parsed_jd: ParsedJD) -> str:
@@ -27,7 +27,7 @@ def parse_jd_text_to_json(
     if not jd_text.strip():
         raise ValueError("JD text cannot be empty.")
 
-    client = parser_client or DeepSeekJDParser()
+    client = parser_client or ConfiguredJDParser()
     raw_parsed_data = client.parse_jd(jd_text, company=company, job_title=job_title)
     parsed_jd = ParsedJD.model_validate(raw_parsed_data)
     save_parsed_jd(parsed_jd)

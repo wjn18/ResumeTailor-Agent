@@ -12,7 +12,7 @@ from app.schemas.resumes import (
 )
 from app.services.resume_parser import load_parsed_resume, save_parsed_resume
 from app.services.user_fact_llm_client import (
-    DeepSeekUserFactParser,
+    ConfiguredUserFactParser,
     UserFactLLMClient,
 )
 
@@ -32,7 +32,7 @@ def parse_user_fact_text_to_json(
         file_type="text",
         text_length=len(normalized_text),
     )
-    client = parser_client or DeepSeekUserFactParser()
+    client = parser_client or ConfiguredUserFactParser()
     raw_parsed_data = client.parse_user_facts(normalized_text, source_document)
     parsed_user_facts = ParsedResume.model_validate(raw_parsed_data)
     normalized_user_facts = _normalize_user_fact_source(

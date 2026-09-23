@@ -3,7 +3,7 @@ import re
 from uuid import uuid4
 
 from app.schemas.resumes import ExperienceFact, ParsedResume, Skill, SourceDocument
-from app.services.deepseek_client import DeepSeekJSONClient
+from app.services.model_client import LLMJSONClient
 from app.services.llm_client import (
     _education_experience_parse_incomplete,
     _honor_award_parse_incomplete,
@@ -21,7 +21,7 @@ class UserFactLLMClient(ABC):
         """Return a dict that can be validated as ParsedResume."""
 
 
-class DeepSeekUserFactParser(DeepSeekJSONClient, UserFactLLMClient):
+class ConfiguredUserFactParser(LLMJSONClient, UserFactLLMClient):
     def parse_user_facts(
         self,
         user_text: str,
@@ -74,6 +74,10 @@ class DeepSeekUserFactParser(DeepSeekJSONClient, UserFactLLMClient):
             )
         parsed_data["source_document"] = source_document.model_dump()
         return ParsedResume.model_validate(parsed_data).model_dump()
+
+
+# Backwards-compatible import; configuration selects the provider.
+DeepSeekUserFactParser = ConfiguredUserFactParser
 
 
 class LocalFallbackUserFactParser(UserFactLLMClient):

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from uuid import uuid4
 
 from app.schemas.jds import ParsedJD
-from app.services.deepseek_client import DeepSeekJSONClient
+from app.services.model_client import LLMJSONClient
 
 
 class JDLLMClient(ABC):
@@ -16,7 +16,7 @@ class JDLLMClient(ABC):
         """Return a dict that can be validated as ParsedJD."""
 
 
-class DeepSeekJDParser(DeepSeekJSONClient, JDLLMClient):
+class ConfiguredJDParser(LLMJSONClient, JDLLMClient):
     def parse_jd(
         self,
         jd_text: str,
@@ -37,6 +37,10 @@ class DeepSeekJDParser(DeepSeekJSONClient, JDLLMClient):
         if job_title is not None:
             parsed_data["job_title"] = job_title
         return ParsedJD.model_validate(parsed_data).model_dump()
+
+
+# Backwards-compatible import; configuration selects the provider.
+DeepSeekJDParser = ConfiguredJDParser
 
 
 class LocalFallbackJDParser(JDLLMClient):

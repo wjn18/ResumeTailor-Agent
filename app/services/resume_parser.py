@@ -5,7 +5,7 @@ from uuid import uuid4
 from app.schemas.resumes import ParsedResume
 from app.schemas.resumes import SourceDocument
 from app.services.document_reader import read_document_text
-from app.services.llm_client import DeepSeekResumeParser, ResumeLLMClient
+from app.services.llm_client import ConfiguredResumeParser, ResumeLLMClient
 from app.services.database import load_json_document, upsert_json_document
 
 
@@ -40,7 +40,7 @@ def parse_resume_file_to_json(
         file_type=source_file_path.suffix.lower().lstrip("."),
         text_length=len(resume_text),
     )
-    client = parser_client or DeepSeekResumeParser()
+    client = parser_client or ConfiguredResumeParser()
     raw_parsed_data = client.parse_resume(resume_text, source_document)
     parsed_resume = ParsedResume.model_validate(raw_parsed_data)
     save_parsed_resume(parsed_resume)

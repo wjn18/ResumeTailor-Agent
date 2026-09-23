@@ -48,6 +48,85 @@ npm run dev
 如需修改后端地址，复制 `frontend/.env.example` 为
 `frontend/.env.local` 并修改 `NEXT_PUBLIC_API_URL`。
 
+## LLM 配置与切换
+
+简历解析、JD 解析、补充事实、匹配、改写和审核统一通过
+`app/services/model_client.py` 的 `LLMJSONClient.request_json()` 调用模型。
+默认 `LLM_PROVIDER=deepseek`，已有 `DEEPSEEK_*` 环境变量继续有效。
+同名的 `LLM_*` 配置优先于当前厂商的 `DEEPSEEK_*`、`ANTHROPIC_*` 或 `GEMINI_*`。
+
+| `LLM_PROVIDER` | 协议 | 默认接口 |
+| --- | --- | --- |
+| `deepseek` | Chat Completions，附带 DeepSeek 默认参数 | DeepSeek 官方接口 |
+| `openai_compatible` | Chat Completions | 必须设置 `LLM_API_URL` |
+| `anthropic` | Claude Messages 原生接口 | `https://api.anthropic.com/v1/messages` |
+| `gemini` | Gemini generateContent 原生接口 | Google 官方接口，根据模型名拼接 |
+
+除旧版 DeepSeek 默认模型外，其他模式均需设置 `LLM_MODEL`，使用账号实际可用的模型 ID。
+
+切换到提供 Chat Completions 兼容接口的服务，只需设置环境变量并重启后端：
+
+```powershell
+$env:LLM_PROVIDER="openai_compatible"
+$env:LLM_API_URL="https://your-provider.example/v1/chat/completions"
+$env:LLM_MODEL="your-model-id"
+$env:LLM_API_KEY="your-api-key"
+$env:LLM_MAX_TOKENS="16384"
+```
+
+`LLM_API_URL` 填完整请求地址，不会自动补 `/chat/completions`。
+通用模式必须填写地址和模型；密钥可留空以连接无需认证的本地服务，
+且不会回退读取 DeepSeek 密钥。`.env.example` 是配置参考；应用不会自动加载
+根目录 `.env`，可导出环境变量或使用 Uvicorn 的 `--env-file .env`。
+
+使用 Claude 原生接口：
+
+```powershell
+$env:LLM_PROVIDER="anthropic"
+$env:LLM_MODEL="你的 Claude 模型 ID"
+$env:LLM_API_KEY="你的 Anthropic API Key"
+$env:LLM_TEMPERATURE="omit"
+Remove-Item Env:LLM_API_URL -ErrorAction SilentlyContinue
+```
+
+使用 Gemini 原生接口：
+
+```powershell
+$env:LLM_PROVIDER="gemini"
+$env:LLM_MODEL="你的 Gemini 模型 ID"
+$env:LLM_API_KEY="你的 Gemini API Key"
+$env:LLM_TEMPERATURE="omit"
+Remove-Item Env:LLM_API_URL -ErrorAction SilentlyContinue
+```
+
+也可以分别用 `ANTHROPIC_API_KEY`、`GEMINI_API_KEY` 配置厂商密钥，但需清除已有
+`LLM_API_KEY` 才会回退读取。切换厂商时同步更新密钥，并清除不适用的
+`LLM_API_URL` 和 `LLM_EXTRA_BODY`，避免旧覆盖值继续生效。
+Gemini 自定义接口地址可包含 `{model}` 占位符，也可填完整 `:generateContent` 地址。
+
+不同模型的可选能力通过以下设置调整：
+
+| 配置 | 默认值 | 用途 |
+| --- | --- | --- |
+| `LLM_JSON_MODE` | `true` | Chat Completions 发送 `response_format`，Gemini 发送 `responseMimeType`；设为 `false` 可关闭 |
+| `LLM_TEMPERATURE` | `0.1` | 不支持温度参数时设为 `omit`；JSON 重试时增加 0.1，Claude 最高为 1，其他模式最高为 2 |
+| `LLM_TOKEN_PARAMETER` | `max_tokens` | 仅 Chat Completions 使用，可改为 `max_completion_tokens`；原生协议自动映射 |
+| `LLM_MAX_TOKENS` | `16384` | 按模型支持的输出上限设置 |
+| `LLM_EXTRA_BODY` | 非 DeepSeek 模式为 `{}` | JSON 对象，加入厂商扩展参数；不能覆盖标准字段 |
+
+DeepSeek 模式默认附加 `thinking={"type":"disabled"}`，可通过
+`LLM_EXTRA_BODY={}` 清除；通用模式不会自动发送此参数。
+客户端统一处理 HTTP 错误、JSON 提取和有限重试，业务层继续做结构与事实校验。
+Claude 当前通过提示词请求 JSON，并做本地解析校验，不发送 `response_format`；
+`LLM_JSON_MODE` 对 Claude 不生效。Gemini 的额外生成选项放在
+`LLM_EXTRA_BODY` 的 `generationConfig` 对象中。
+
+原生协议参考 [Claude Messages 文档](https://platform.claude.com/docs/en/api/messages/create)
+和 [Gemini generateContent 文档](https://ai.google.dev/api/generate-content?hl=en)。
+此入口覆盖上述三种协议的文本 JSON 请求；其他协议、云平台专属认证、工具调用和
+多模态请求需要继续扩展，不能保证任意 LLM 即插即用。
+切换模型后仍需验证实际 JSON 输出质量与参数支持情况。
+
 ## Netlify + Render 部署
 
 部署固定使用 GitHub 的 `FastAPI` 分支。`render.yaml` 负责 FastAPI，

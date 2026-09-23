@@ -3,7 +3,7 @@ import re
 from uuid import uuid4
 
 from app.schemas.resumes import ExperienceFact, ParsedResume, Skill, SourceDocument
-from app.services.deepseek_client import DeepSeekJSONClient
+from app.services.model_client import LLMJSONClient
 
 
 class ResumeLLMClient(ABC):
@@ -29,7 +29,7 @@ class ModelAPIResumeParser(ResumeLLMClient):
         )
 
 
-class DeepSeekResumeParser(DeepSeekJSONClient, ResumeLLMClient):
+class ConfiguredResumeParser(LLMJSONClient, ResumeLLMClient):
     def parse_resume(self, resume_text: str, source_document: SourceDocument) -> dict:
         prompt = build_resume_parse_prompt(resume_text)
         parsed_data = self.request_json(
@@ -95,6 +95,10 @@ class DeepSeekResumeParser(DeepSeekJSONClient, ResumeLLMClient):
             )
         parsed_data["source_document"] = source_document.model_dump()
         return ParsedResume.model_validate(parsed_data).model_dump()
+
+
+# Backwards-compatible import; configuration selects the provider.
+DeepSeekResumeParser = ConfiguredResumeParser
 
 
 class LocalFallbackResumeParser(ResumeLLMClient):

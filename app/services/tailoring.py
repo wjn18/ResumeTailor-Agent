@@ -21,7 +21,7 @@ from app.schemas.tailoring import (
     TailoredSentence,
     TailoredWorkExperience,
 )
-from app.services.deepseek_client import DeepSeekJSONClient
+from app.services.model_client import LLMJSONClient
 
 
 MATCHED = "matched"
@@ -65,7 +65,7 @@ class TailoringLLMClient(ABC):
         """Return a corrected TailoredResumeDraft after applying the audit."""
 
 
-class DeepSeekTailoringClient(DeepSeekJSONClient, TailoringLLMClient):
+class ConfiguredTailoringClient(LLMJSONClient, TailoringLLMClient):
     def match_requirements(self, jd: ParsedJD, resume: ParsedResume) -> dict:
         return self.request_json(
             system_prompt=(
@@ -139,6 +139,10 @@ class DeepSeekTailoringClient(DeepSeekJSONClient, TailoringLLMClient):
                 fact_check_report,
             ),
         )
+
+
+# Backwards-compatible import; configuration selects the provider.
+DeepSeekTailoringClient = ConfiguredTailoringClient
 
 
 class LocalFallbackTailoringClient(TailoringLLMClient):
@@ -359,7 +363,7 @@ def match_requirements(
     resume: ParsedResume,
     client: TailoringLLMClient | None = None,
 ) -> RequirementMatchReport:
-    raw_report = (client or DeepSeekTailoringClient()).match_requirements(jd, resume)
+    raw_report = (client or ConfiguredTailoringClient()).match_requirements(jd, resume)
     report = RequirementMatchReport.model_validate(raw_report)
     return validate_match_report(report, jd, resume)
 
@@ -371,7 +375,7 @@ def rewrite_resume(
     client: TailoringLLMClient | None = None,
 ) -> TailoredResumeDraft:
     match_report = match_report or match_requirements(jd, resume, client=client)
-    raw_draft = (client or DeepSeekTailoringClient()).rewrite_resume(
+    raw_draft = (client or ConfiguredTailoringClient()).rewrite_resume(
         jd,
         resume,
         match_report,
@@ -392,7 +396,7 @@ def fact_check_resume(
     draft: TailoredResumeDraft,
     client: TailoringLLMClient | None = None,
 ) -> FactCheckReport:
-    raw_report = (client or DeepSeekTailoringClient()).fact_check_resume(
+    raw_report = (client or ConfiguredTailoringClient()).fact_check_resume(
         jd_id,
         resume,
         draft,
@@ -414,7 +418,7 @@ def revise_after_fact_check(
     ):
         return draft
 
-    raw_draft = (client or DeepSeekTailoringClient()).revise_after_fact_check(
+    raw_draft = (client or ConfiguredTailoringClient()).revise_after_fact_check(
         jd,
         resume,
         draft,
@@ -437,7 +441,7 @@ def build_tailored_resume(
 ]:
     from app.workflows.tailoring_graph import run_tailoring_graph
 
-    return run_tailoring_graph(jd, resume, client=client or DeepSeekTailoringClient())
+    return run_tailoring_graph(jd, resume, client=client or ConfiguredTailoringClient())
 
 
 def build_initial_tailored_resume(
@@ -447,7 +451,7 @@ def build_initial_tailored_resume(
 ) -> tuple[RequirementMatchReport, TailoredResumeDraft]:
     from app.workflows.tailoring_graph import run_initial_graph
 
-    return run_initial_graph(jd, resume, client=client or DeepSeekTailoringClient())
+    return run_initial_graph(jd, resume, client=client or ConfiguredTailoringClient())
 
 
 def review_tailored_resume(
@@ -461,7 +465,7 @@ def review_tailored_resume(
 
     return run_review_graph(
         jd, resume, match_report, initial_draft,
-        client=client or DeepSeekTailoringClient(),
+        client=client or ConfiguredTailoringClient(),
     )
 
 
