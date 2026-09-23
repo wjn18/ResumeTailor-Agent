@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.tailoring import PARTIALLY_SUPPORTED
+from app.schemas.tailoring import SavedTailoredResume
+from app.storage.workflow_base import RunBusy
 from app.test.test_tailoring_workflow import (
     AuditedTailoringClient,
     TwoPassRevisionClient,
@@ -80,6 +82,25 @@ class TailoringRuntimeTests(unittest.TestCase):
         names = patch("app.services.tailored_resume_storage.list_tailored_resumes", return_value=[])
         names.start()
         self.addCleanup(names.stop)
+        self.mock_documents()
+
+    def mock_documents(self):
+        def load(key):
+            if key not in self.stored:
+                raise FileNotFoundError(key)
+            return self.stored[key]
+
+        def insert(payload):
+            saved = self.stored.setdefault(
+                payload["tailored_resume_id"], SavedTailoredResume.model_validate(payload),
+            )
+            return saved.model_dump(mode="json")
+
+        for target in ("app.services.tailored_resume_storage.load_tailored_resume", "app.api.tailoring.load_tailored_resume"):
+            self.enterContext(patch(target, side_effect=load))
+        self.insert_mock = self.enterContext(patch(
+            "app.services.tailored_resume_storage.create_tailored_resume_document", side_effect=insert,
+        ))
 
     def use_runtime(self, llm, **kwargs):
         runtime = TailoringRuntime(client=llm, **kwargs)
@@ -135,6 +156,7 @@ class TailoringRuntimeTests(unittest.TestCase):
                 self.assertEqual(repeated.json()["status"], "needs_attention")
                 self.assertEqual(llm.revision_calls, 2)
         self.write_mock.assert_not_called()
+        self.insert_mock.assert_not_called()
 
     def test_unchanged_draft_reuses_audit_and_keeps_failure(self):
         llm = UnchangedRevisionClient()
@@ -158,8 +180,7 @@ class TailoringRuntimeTests(unittest.TestCase):
         thread_id = self.start()
         failed = self.review(thread_id)
         self.assertEqual(failed.status_code, 400)
-        with runtime.acquire(thread_id) as run:
-            self.assertEqual(run.status, "failed")
+        self.assertEqual(runtime.get(thread_id)["status"], "failed")
         resumed = self.review(thread_id)
         self.assertEqual(resumed.status_code, 200, resumed.text)
         self.assertEqual(resumed.json()["status"], "awaiting_confirmation")
@@ -170,7 +191,7 @@ class TailoringRuntimeTests(unittest.TestCase):
         llm = PassingClient()
         self.use_runtime(llm)
         thread_id = self.start()
-        with patch("app.api.tailoring.save_tailored_resume", side_effect=RuntimeError("DB unavailable")):
+        with patch("app.workflows.tailoring_runtime.save_tailored_resume", side_effect=RuntimeError("DB unavailable")):
             failed = self.review(thread_id)
         self.assertEqual(failed.status_code, 400)
         completed = self.review(thread_id)
@@ -193,8 +214,9 @@ class TailoringRuntimeTests(unittest.TestCase):
         llm = PassingClient()
         runtime = self.use_runtime(llm)
         thread_id = self.start()
-        with runtime.acquire(thread_id):
-            self.assertEqual(self.review(thread_id).status_code, 409)
+        with runtime.store.lease(thread_id):
+            with self.assertRaises(RunBusy):
+                runtime.execute(thread_id)
         self.assertEqual(llm.fact_check_calls, 0)
         self.assertEqual(self.review(thread_id).status_code, 200)
 
@@ -210,25 +232,27 @@ class TailoringRuntimeTests(unittest.TestCase):
         self.assertEqual(second_result["draft"]["jd_id"], "jd_second")
         self.assertEqual(len(self.stored), 2)
 
-    def test_failed_creation_releases_session_capacity(self):
+    def test_failed_creation_keeps_a_resumable_task(self):
         llm = PassingClient()
-        self.use_runtime(llm, max_runs=1)
+        runtime = self.use_runtime(llm)
         with patch.object(llm, "match_requirements", side_effect=RuntimeError("Unavailable")):
             response = self.http.post("/tailoring/build/initial", json=self.payload)
         self.assertEqual(response.status_code, 400)
-        self.start()
+        thread_id = response.json()["detail"]["thread_id"]
+        self.assertEqual(runtime.get(thread_id)["failed_node"], "match_requirements")
+        self.assertEqual(self.review(thread_id).status_code, 200)
 
-    def test_expiration_cleans_checkpoint_and_capacity_is_bounded(self):
-        runtime = self.use_runtime(PassingClient(), max_runs=1)
+    def test_runtime_replacement_retains_task_and_its_checkpoint(self):
+        first_client = PassingClient()
+        runtime = self.use_runtime(first_client)
         thread_id = self.start()
-        full = self.http.post("/tailoring/build/initial", json=self.payload)
-        self.assertEqual(full.status_code, 503)
-        with runtime.acquire(thread_id) as run:
-            config = run.config
-        with patch("app.workflows.tailoring_runtime.monotonic", return_value=run.touched_at + 3601):
-            self.assertEqual(self.review(thread_id).status_code, 404)
-        self.assertIsNone(runtime.checkpointer.get_tuple(config))
-        self.start()
+        second_client = PassingClient()
+        self.use_runtime(second_client, store=runtime.store)
+        response = self.review(thread_id)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(second_client.draft_calls, 0)
+        self.assertEqual(second_client.match_calls, 0)
+        self.assertEqual(second_client.fact_check_calls, 1)
 
     def test_legacy_unresolved_report_blocks_confirmation_before_export(self):
         self.use_runtime(NeverPassingClient())

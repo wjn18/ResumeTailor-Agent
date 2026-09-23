@@ -197,16 +197,46 @@ uv run python -m databae.migrate_to_postgres
    `needs_attention`、`saved_resume: null`，前端展示问题并禁止确认导出。
 4. `/tailoring/build` 一次执行同一张图，返回相同的审核状态和保存规则。
 
-`app/workflows/tailoring_runtime.py` 管理进程内任务和共享内存 checkpointer。
-同一任务并发请求返回 409；已成功审核的重复请求复用结果，不重复调用模型或保存。
-审核或保存失败后，可用原 `thread_id` 重试，从已完成的图节点继续；前端提供
-“重试审核”按钮。返回补充信息时保留原输入。任务不存在或过期返回 404。
+## LangGraph Phase 2：持久化任务与恢复
 
-本阶段必须使用**单进程、单实例后端**（一个 Uvicorn worker）。任务在一小时无
-请求后过期并按需清理；最多保留 256 个任务，达到上限返回 503。进程重启会丢失
-未完成任务；已保存的简历仍在业务数据库中。浏览器刷新后恢复、跨实例执行、
-PostgreSQL checkpointer、持久化任务调度和用户确认 interrupt 留待后续阶段。
-用户编辑后的内容版本与复审绑定也尚未迁移到图内。
+前端现在使用持久化任务接口，在创建任务后立即取得 ID，通过查询展示初稿及审核结果。
+原 `/build`、`/build/initial`、`/build/review` 接口继续可用，与后台执行器共用执行逻辑。
+
+| 接口 | 行为 |
+| --- | --- |
+| `POST /tailoring/tasks` | 接收 `{jd, resume, request_id?}`，持久化输入快照并返回 202；`request_id` 为可选 UUID，同 ID、同输入重试返回原任务，不同输入返回 409。 |
+| `GET /tailoring/tasks/{thread_id}` | 查询状态、当前/失败节点、修订次数、草稿/审核版本、初稿预览与最终结果；不存在返回 404。 |
+| `POST /tailoring/tasks/{thread_id}/resume` | 将失败或停在初稿的任务重新排队，返回 202；已运行或完成的任务不重复执行，已取消的任务返回 409。 |
+| `POST /tailoring/tasks/{thread_id}/cancel` | 排队/失败任务直接取消；正在执行的任务标记为 `cancelling`，在当前模型调用结束后的节点边界停止；进入最终保存阶段后返回 409。 |
+
+任务状态包括 `queued`、`running`、`initial_ready`、`saving`、`awaiting_confirmation`、
+`needs_attention`、`failed`、`cancelling` 和 `cancelled`。确认后的简历在查询时显示
+`completed`；修改后的预览读取业务库最新内容，不会被生成时的旧快照覆盖。
+前端把任务 ID 保存在当前标签页的 `sessionStorage` 中，刷新同一标签页后自动接续查询。
+初稿仍会先显示；失败时可以重试，运行中可以取消。任务创建前的文件/JD 解析尚不支持恢复；
+尚未保存的网页编辑也不会自动保存。
+
+- `app/storage/workflow_factory.py` 独立管理任务库配置，默认使用 `DATABASE_URL`，
+  也可以通过 `CHECKPOINT_DATABASE_URL` 指定单独的 PostgreSQL。更换业务数据库类型时，
+  任务库仍需 PostgreSQL；任务记录和检查点必须始终指向同一个任务库。
+- 应用 lifespan 建立/关闭连接池、执行 LangGraph `PostgresSaver.setup()` 和任务表初始化。
+  初始化用数据库锁串行化，支持多个进程同时启动；数据库账号需要建表和建索引权限。
+- 每个进程默认启动两个后台执行器，`TAILORING_WORKERS` 可设置为 1–4。多进程/多实例
+  通过 PostgreSQL session advisory lock 避免同一任务同时提交进度；锁与 checkpointer
+  绑定在同一连接，丢失锁连接的旧执行器无法继续写检查点。
+- 节点结果以 `durability="sync"` 保存。进程退出后，其他执行器会自动接手遗留的
+  `queued/running/saving/cancelling` 任务；模型或业务错误记为 `failed`，等待用户重试，
+  不无限自动重试。崩溃时尚未完成检查点写入的节点可能重新调用模型。
+- 输入快照及哈希、流程版本、草稿/审核版本和失败节点保存在 `tailoring_runs` 中。
+  简历结果使用任务对应的固定 ID，并通过业务存储的 `create_tailored_resume_document`
+  原子插入一次；即使保存成功后丢失任务回执，重放也不会新建第二份简历或覆盖用户修改。
+- PostgreSQL 不使用第一阶段的一小时内存过期策略；任务和检查点持续保留。部署多个
+  Uvicorn worker 时，每个进程最多使用 8 个任务库连接，需按数据库连接额度配置实例数。
+  使用连接代理时必须支持会话锁，不能使用 transaction pooling 模式。
+
+运行时内存适配器仅用于显式构造的测试。生产启动若没有可用的 PostgreSQL 会失败，
+不会降级为内存存储。人工确认的 `interrupt()`、用户编辑版本与复审绑定、实时事件推送
+留待下一阶段；当前前端使用任务查询轮询。
 
 ## 测试
 
@@ -233,4 +263,7 @@ $env:TEST_DATABASE_URL = "postgresql://test_user:password@localhost:5432/resume_
 
 集成测试每例创建独立随机 schema，结束后删除该 schema；测试账号需要创建 schema 的权限。
 覆盖六张业务表的 CRUD、约束冲突与回滚、级联删除、JSON 文档覆盖写入、定制简历排序，
-以及简历保存、修改、确认、DOCX 下载和重新编辑流程。未设置 `TEST_DATABASE_URL` 时跳过这些集成测试。
+以及简历保存、修改、确认、DOCX 下载和重新编辑流程。任务集成测试还覆盖真实进程崩溃后的
+自动恢复、跨连接互斥、锁连接失效、取消、失败节点重试、幂等创建及保存回执丢失后的重放。
+测试账号还需要终止其自身测试连接的权限，以验证锁连接断开。
+未设置 `TEST_DATABASE_URL` 时跳过这些集成测试。

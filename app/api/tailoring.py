@@ -1,8 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from app.schemas.jds import ParsedJD
-from app.schemas.resumes import ParsedResume
 from app.schemas.tailoring import (
     ConfirmTailoredResumeRequest,
     FactCheckRequest,
@@ -20,6 +18,8 @@ from app.schemas.tailoring import (
     TailoringInitialBuildResponse,
     TailoringReviewRequest,
     TailoringReviewResponse,
+    TailoringTaskResponse,
+    TailoringTaskCreateRequest,
 )
 from app.services.tailored_resume_storage import (
     list_tailored_resumes,
@@ -37,77 +37,83 @@ from app.services.tailoring import (
     rewrite_resume,
 )
 
-from app.workflows.tailoring_graph import tailoring_result
-from app.workflows.tailoring_runtime import (
-    TailoringCapacityExceeded,
-    TailoringRunBusy,
-    TailoringRunNotFound,
-    get_tailoring_runtime,
-)
+from app.storage.workflow_base import RunBusy, RunConflict, RunNotFound
+from app.workflows.tailoring_runtime import get_tailoring_runtime
 
 
 router = APIRouter(prefix="/tailoring", tags=["tailoring"])
 
 
 def _workflow_error(exc):
-    if isinstance(exc, TailoringRunNotFound):
+    if isinstance(exc, RunNotFound):
         return HTTPException(status_code=404, detail=str(exc))
-    if isinstance(exc, TailoringRunBusy):
+    if isinstance(exc, (RunBusy, RunConflict)):
         return HTTPException(status_code=409, detail=str(exc))
-    if isinstance(exc, TailoringCapacityExceeded):
-        return HTTPException(status_code=503, detail=str(exc))
     return HTTPException(status_code=400, detail=f"简历生成失败：{exc}")
 
 
-def _finish_tailoring(runtime, run):
-    # The run lock also covers persistence so repeated review requests return
-    # the same result instead of creating another saved resume.
-    if run.response is not None:
-        return TailoringBuildResponse.model_validate(run.response)
-    state = runtime.finish(run)
-    jd = ParsedJD.model_validate(state["jd"])
-    resume = ParsedResume.model_validate(state["resume"])
-    match, initial, first_report, revised, final_report = tailoring_result(state)
-    formal = assemble_formal_resume(jd, resume, revised)
-    saved = None
-    if state["status"] == "awaiting_confirmation":
-        saved = save_tailored_resume(
-            jd, resume, revised,
-            initial_draft=initial,
-            formal_resume=formal,
-            match_report=match,
-            fact_check_report=first_report,
-            final_fact_check_report=final_report,
-        )
-    response = TailoringBuildResponse(
-        thread_id=run.thread_id,
-        status=state["status"],
-        revision_count=state["revision_count"],
-        match_report=match,
-        initial_draft=initial,
-        draft=revised,
-        fact_check_report=first_report,
-        final_fact_check_report=final_report,
-        formal_resume=formal,
-        saved_resume=saved,
-    )
-    run.response = response.model_dump(mode="json")
-    return response
+def _checked_result(job):
+    if job["status"] == "failed":
+        raise HTTPException(status_code=400, detail={
+            "message": job["error"], "thread_id": job["thread_id"],
+        })
+    if job["status"] in {"cancelled", "cancelling"}:
+        raise HTTPException(status_code=409, detail="任务已取消。")
+    return job
+
+
+def _task_response(job):
+    # Restore the latest saved edits rather than an old generation snapshot.
+    result = job.get("result")
+    if result and result.get("saved_resume"):
+        saved = load_tailored_resume(result["saved_resume"]["tailored_resume_id"])
+        result = {**result, "saved_resume": saved.model_dump(mode="json"), "formal_resume": saved.formal_resume}
+        job = {**job, "result": result}
+        if saved.status == "confirmed":
+            job["status"] = "completed"
+    return TailoringTaskResponse.model_validate(job)
+
+
+@router.post("/tasks", response_model=TailoringTaskResponse, status_code=202)
+def create_tailoring_task(payload: TailoringTaskCreateRequest):
+    try:
+        return _task_response(get_tailoring_runtime().submit(
+            payload.jd, payload.resume, request_id=payload.request_id,
+        ))
+    except RunConflict as exc:
+        raise _workflow_error(exc) from exc
+
+
+@router.get("/tasks/{thread_id}", response_model=TailoringTaskResponse)
+def get_tailoring_task(thread_id: str):
+    try:
+        return _task_response(get_tailoring_runtime().get(thread_id))
+    except RunNotFound as exc:
+        raise _workflow_error(exc) from exc
+
+
+@router.post("/tasks/{thread_id}/resume", response_model=TailoringTaskResponse, status_code=202)
+def resume_tailoring_task(thread_id: str):
+    try:
+        return _task_response(get_tailoring_runtime().resume(thread_id))
+    except (RunNotFound, RunConflict) as exc:
+        raise _workflow_error(exc) from exc
+
+
+@router.post("/tasks/{thread_id}/cancel", response_model=TailoringTaskResponse, status_code=202)
+def cancel_tailoring_task(thread_id: str):
+    try:
+        return _task_response(get_tailoring_runtime().cancel(thread_id))
+    except (RunNotFound, RunConflict) as exc:
+        raise _workflow_error(exc) from exc
 
 
 @router.post("/build/initial", response_model=TailoringInitialBuildResponse)
 def build_initial_resume_for_jd(payload: TailoringBuildRequest):
     runtime = get_tailoring_runtime()
     try:
-        with runtime.create() as run:
-            state = runtime.start(run, payload.jd, payload.resume, initial_only=True)
-            draft = TailoredResumeDraft.model_validate(state["initial_draft"])
-            return TailoringInitialBuildResponse(
-                thread_id=run.thread_id,
-                match_report=RequirementMatchReport.model_validate(state["match_report"]),
-                draft=draft,
-                formal_resume=assemble_formal_resume(payload.jd, payload.resume, draft),
-            )
+        job = runtime.submit(payload.jd, payload.resume, initial_only=True)
+        return _checked_result(runtime.execute(job["thread_id"], wait=True))["preview"]
     except (RuntimeError, ValueError) as exc:
         raise _workflow_error(exc) from exc
 
@@ -116,9 +122,9 @@ def build_initial_resume_for_jd(payload: TailoringBuildRequest):
 def review_initial_resume(payload: TailoringReviewRequest):
     runtime = get_tailoring_runtime()
     try:
-        with runtime.acquire(payload.thread_id) as run:
-            return _finish_tailoring(runtime, run)
-    except (RuntimeError, ValueError, TailoringRunNotFound) as exc:
+        runtime.resume(payload.thread_id)
+        return _checked_result(runtime.execute(payload.thread_id, wait=True))["result"]
+    except (RuntimeError, ValueError, RunNotFound) as exc:
         raise _workflow_error(exc) from exc
 
 
@@ -150,9 +156,8 @@ def fact_check_tailored_resume(payload: FactCheckRequest):
 def build_resume_for_jd(payload: TailoringBuildRequest):
     runtime = get_tailoring_runtime()
     try:
-        with runtime.create() as run:
-            runtime.start(run, payload.jd, payload.resume)
-            return _finish_tailoring(runtime, run)
+        job = runtime.submit(payload.jd, payload.resume)
+        return _checked_result(runtime.execute(job["thread_id"], wait=True))["result"]
     except (RuntimeError, ValueError) as exc:
         raise _workflow_error(exc) from exc
 

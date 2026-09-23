@@ -64,3 +64,10 @@ class Storage(ABC):
         Payload includes tailored_resume_id, status, and generated_at.
         Updating an existing document preserves its original ordering timestamp.
         """
+
+    @abstractmethod
+    def create_tailored_resume_document(self, payload: dict) -> dict:
+        """Atomically insert once by ID, returning the existing document on conflict.
+
+        Replayed workflow saves must never overwrite subsequent user edits.
+        """

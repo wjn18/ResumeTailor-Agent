@@ -102,3 +102,17 @@ export type TailoringReviewResponse = {
 };
 
 export type TailoringBuildResponse = TailoringReviewResponse;
+
+export type TailoringTask = {
+  thread_id: string;
+  status: "queued" | "running" | "saving" | "initial_ready" | "awaiting_confirmation"
+    | "needs_attention" | "failed" | "cancelling" | "cancelled" | "completed";
+  current_node: string | null;
+  failed_node: string | null;
+  error: string | null;
+  revision_count: number;
+  draft_version: number;
+  audit_version: number;
+  preview: TailoringInitialBuildResponse | null;
+  result: TailoringBuildResponse | null;
+};

@@ -11,12 +11,18 @@ from app.api.tailoring import router as tailoring_router
 from app.api.user_facts import router as user_facts_router
 
 from app.storage.factory import initialize_database
+from app.workflows.tailoring_runtime import start_tailoring_runtime, close_tailoring_runtime
+from starlette.concurrency import run_in_threadpool
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    initialize_database()
-    yield
+    await run_in_threadpool(initialize_database)
+    try:
+        await run_in_threadpool(start_tailoring_runtime)
+        yield
+    finally:
+        await run_in_threadpool(close_tailoring_runtime)
 
 
 app = FastAPI(lifespan=lifespan)

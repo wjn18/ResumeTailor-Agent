@@ -5,6 +5,7 @@ import type {
   SavedTailoredResume,
   TailoringInitialBuildResponse,
   TailoringReviewResponse,
+  TailoringTask,
 } from "@/types";
 
 const API_URL =
@@ -162,4 +163,24 @@ export async function confirmResume(
 
 export function docxDownloadUrl(tailoredResumeId: string): string {
   return `${API_URL}/tailoring/saved/${tailoredResumeId}/docx`;
+}
+
+export function createTailoringTask(jd: ParsedJD, resume: ParsedResume, requestId: string): Promise<TailoringTask> {
+  return request<TailoringTask>("/tailoring/tasks", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({jd, resume, request_id: requestId}),
+  });
+}
+
+export function getTailoringTask(threadId: string): Promise<TailoringTask> {
+  return request<TailoringTask>(`/tailoring/tasks/${encodeURIComponent(threadId)}`);
+}
+
+export function resumeTailoringTask(threadId: string): Promise<TailoringTask> {
+  return request<TailoringTask>(`/tailoring/tasks/${encodeURIComponent(threadId)}/resume`, {method: "POST"});
+}
+
+export function cancelTailoringTask(threadId: string): Promise<TailoringTask> {
+  return request<TailoringTask>(`/tailoring/tasks/${encodeURIComponent(threadId)}/cancel`, {method: "POST"});
 }

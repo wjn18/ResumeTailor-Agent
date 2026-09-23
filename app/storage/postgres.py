@@ -162,6 +162,22 @@ class PostgresStorage(Storage):
             )
             connection.commit()
 
+    def create_tailored_resume_document(self, payload: dict) -> dict:
+        with self._connect() as connection:
+            row = connection.execute(
+                """INSERT INTO tailored_resume_documents
+                       (tailored_resume_id, payload, status, generated_at)
+                   VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (tailored_resume_id) DO NOTHING RETURNING payload""",
+                (payload["tailored_resume_id"], Jsonb(payload), payload["status"], payload["generated_at"]),
+            ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    "SELECT payload FROM tailored_resume_documents WHERE tailored_resume_id=%s",
+                    (payload["tailored_resume_id"],),
+                ).fetchone()
+            return row["payload"]
+
 
 def _ensure_document_table(table: str, id_column: str) -> None:
     allowed = {

@@ -14,17 +14,19 @@ import {
   Upload,
   UserRoundPlus,
 } from "lucide-react";
-import {Fragment, useRef, useState} from "react";
+import {Fragment, useEffect, useRef, useState} from "react";
 
 import {
   APIRequestError,
-  buildInitialTailoredResume,
+  createTailoringTask,
+  getTailoringTask,
+  resumeTailoringTask,
+  cancelTailoringTask,
   confirmResume,
   docxDownloadUrl,
   mergePersonalFacts,
   parseJD,
   parseResume,
-  reviewTailoredResume,
   saveResumeEdits,
 } from "@/lib/api";
 import type {
@@ -33,10 +35,13 @@ import type {
   FormalProject,
   FormalResume,
   FormalWorkExperience,
+  TailoringReviewResponse,
 } from "@/types";
 
+const TASK_STORAGE_KEY = "resume-tailor-active-task";
+
 type ViewState = "input" | "generating" | "preview";
-type ReviewState = "idle" | "reviewing" | "replacing" | "ready" | "needs_attention" | "error";
+type ReviewState = "idle" | "reviewing" | "replacing" | "ready" | "needs_attention" | "error" | "cancelling";
 type GenerationStage =
   | "idle"
   | "resume"
@@ -131,19 +136,77 @@ export default function Home() {
 
   const canGenerate = Boolean(resumeFile && jdText.trim());
   const isReviewLocked =
-    reviewState === "reviewing" || reviewState === "replacing";
+    reviewState === "reviewing" || reviewState === "replacing" || reviewState === "cancelling";
+
+  useEffect(() => {
+    let threadId: string | null = null;
+    try { threadId = window.sessionStorage.getItem(TASK_STORAGE_KEY); } catch { /* Storage may be disabled. */ }
+    if (threadId) {
+      const runId = ++generationRunRef.current;
+      setReviewThreadId(threadId);
+      setView("generating");
+      setGenerationStage("initial");
+      setReviewState("reviewing");
+      void followTask(threadId, runId);
+    }
+    return () => { generationRunRef.current += 1; };
+  }, []);
+
+  function rememberTask(threadId: string | null) {
+    setReviewThreadId(threadId);
+    try {
+      if (threadId) window.sessionStorage.setItem(TASK_STORAGE_KEY, threadId);
+      else window.sessionStorage.removeItem(TASK_STORAGE_KEY);
+    } catch { /* The task still works without browser storage. */ }
+  }
+
+  async function followTask(threadId: string, runId: number) {
+    let previewShown = false;
+    try {
+      while (runId === generationRunRef.current) {
+        const task = await getTailoringTask(threadId);
+        if (runId !== generationRunRef.current) return;
+        if (task.preview && !previewShown) {
+          setFormalResume(task.preview.formal_resume);
+          setView("preview");
+          previewShown = true;
+        }
+        if (task.result) {
+          setView("preview");
+          await displayReview(task.result, runId);
+          return;
+        }
+        if (task.status === "failed") throw new Error(task.error || "任务执行失败，可重试继续。");
+        if (task.status === "cancelled") {
+          returnToInputs();
+          return;
+        }
+        if (task.status === "initial_ready") await resumeTailoringTask(threadId);
+        if (runId !== generationRunRef.current) return;
+        setGenerationStage(previewShown ? "review" : "initial");
+        setReviewState(task.status === "cancelling" ? "cancelling" : "reviewing");
+        await wait(1200);
+      }
+    } catch (requestError) {
+      if (runId !== generationRunRef.current) return;
+      setError(formatRequestError("查询任务", requestError));
+      setReviewState("error");
+      setGenerationStage("idle");
+      setView(previewShown ? "preview" : "input");
+    }
+  }
 
   async function handleGenerate() {
     if (!resumeFile || !jdText.trim()) return;
     const runId = ++generationRunRef.current;
     let stage: GenerationStage = "resume";
-    let initialResumeIsVisible = false;
+    let submittedThreadId: string | null = null;
     setError(null);
     setReviewState("idle");
     setReviewIssues([]);
     setUpdatingModule(null);
     setTailoredResumeId(null);
-    setReviewThreadId(null);
+    rememberTask(null);
     setGenerationStage(stage);
     setView("generating");
 
@@ -168,21 +231,14 @@ export default function Home() {
 
       stage = "initial";
       setGenerationStage(stage);
-      const initialResult = await buildInitialTailoredResume(
-        parsedJD,
-        parsedResume,
-      );
+      const requestId = crypto.randomUUID();
+      submittedThreadId = `tailoring_${requestId.replaceAll("-", "")}`;
+      rememberTask(submittedThreadId);
+      const task = await createTailoringTask(parsedJD, parsedResume, requestId);
       if (runId !== generationRunRef.current) return;
-
-      setReviewThreadId(initialResult.thread_id);
-      setFormalResume(initialResult.formal_resume);
-      setView("preview");
+      rememberTask(task.thread_id);
       setReviewState("reviewing");
-      initialResumeIsVisible = true;
-
-      stage = "review";
-      setGenerationStage(stage);
-      await reviewAndDisplay(initialResult.thread_id, runId);
+      await followTask(task.thread_id, runId);
     } catch (requestError) {
       if (runId !== generationRunRef.current) return;
       setError(
@@ -192,19 +248,12 @@ export default function Home() {
         ),
       );
       setGenerationStage("idle");
-      if (initialResumeIsVisible) {
-        setReviewState("error");
-      } else {
-        setView("input");
-        setReviewState("idle");
-      }
+      setView("input");
+      setReviewState(submittedThreadId ? "error" : "idle");
     }
   }
 
-  async function reviewAndDisplay(threadId: string, runId: number) {
-    const reviewResult = await reviewTailoredResume(
-      threadId,
-    );
+  async function displayReview(reviewResult: TailoringReviewResponse, runId: number) {
     if (runId !== generationRunRef.current) return;
 
     setReviewState("replacing");
@@ -240,7 +289,8 @@ export default function Home() {
     setReviewState("reviewing");
     setGenerationStage("review");
     try {
-      await reviewAndDisplay(reviewThreadId, runId);
+      await resumeTailoringTask(reviewThreadId);
+      await followTask(reviewThreadId, runId);
     } catch (requestError) {
       if (runId !== generationRunRef.current) return;
       setError(formatRequestError("重试审核", requestError));
@@ -249,8 +299,27 @@ export default function Home() {
     }
   }
 
+  async function handleCancelTask() {
+    if (!reviewThreadId) return;
+    const cancelRunId = generationRunRef.current;
+    try {
+      const task = await cancelTailoringTask(reviewThreadId);
+      if (cancelRunId !== generationRunRef.current) return;
+      if (task.status === "cancelled") returnToInputs();
+      else {
+        setReviewState("cancelling");
+        const runId = ++generationRunRef.current;
+        await followTask(reviewThreadId, runId);
+      }
+    } catch (requestError) {
+      if (cancelRunId !== generationRunRef.current) return;
+      setError(formatRequestError("取消任务", requestError));
+    }
+  }
+
   function returnToInputs() {
     generationRunRef.current += 1;
+    rememberTask(null);
     setView("input");
     setReviewState("idle");
     setGenerationStage("idle");
@@ -389,7 +458,7 @@ export default function Home() {
     setPersonalInfo("");
     setFormalResume(null);
     setTailoredResumeId(null);
-    setReviewThreadId(null);
+    rememberTask(null);
     setIsEditing(false);
     setGenerationStage("idle");
     setReviewState("idle");
@@ -502,6 +571,13 @@ export default function Home() {
           </div>
 
           {error && <p className="error-message">{error}</p>}
+          {reviewState === "error" && reviewThreadId && (
+            <div className="task-recovery-actions">
+              <button className="secondary-action" type="button" onClick={handleRetryReview}>重试任务</button>
+              <button className="secondary-action" type="button" onClick={handleCancelTask}>取消任务</button>
+              <button className="secondary-action" type="button" onClick={returnToInputs}>返回输入</button>
+            </div>
+          )}
 
           <button
             className="primary-action generate-button"
@@ -516,6 +592,13 @@ export default function Home() {
       )}
 
       {view === "generating" && <ResumeSkeleton />}
+      {reviewThreadId && isReviewLocked && reviewState !== "replacing" && (
+        <div className="preview-actions">
+          <button className="secondary-action" type="button" onClick={handleCancelTask} disabled={reviewState === "cancelling"}>
+            {reviewState === "cancelling" ? "正在取消…" : "取消任务"}
+          </button>
+        </div>
+      )}
 
       {view === "preview" && formalResume && (
         <section
@@ -526,7 +609,7 @@ export default function Home() {
             <div className="review-status" role="status">
               <CircleAlert size={18} aria-hidden />
               <div>
-                <strong>！正在重新审核中</strong>
+                <strong>{reviewState === "cancelling" ? "正在取消任务" : "正在审核简历"}</strong>
                 <span>
                   {reviewState === "replacing" && updatingModule
                     ? `正在更新：${updatingModule}`

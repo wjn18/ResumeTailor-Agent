@@ -25,6 +25,8 @@ class StorageSelectionTests(unittest.TestCase):
     def setUp(self):
         factory._cached_storage.cache_clear()
         self.addCleanup(factory._cached_storage.cache_clear)
+        self.enterContext(patch("app.main.start_tailoring_runtime"))
+        self.enterContext(patch("app.main.close_tailoring_runtime"))
         self.storage = Mock(spec=Storage)
         self.constructor = Mock(return_value=self.storage)
         self.enterContext(patch.dict(factory.BACKENDS, {"test": self.constructor}))

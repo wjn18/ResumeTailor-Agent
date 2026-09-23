@@ -1,5 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal, Optional
+from uuid import UUID
 
 from app.schemas.jds import ParsedJD
 from app.schemas.resumes import ParsedResume
@@ -141,6 +142,10 @@ class TailoringBuildRequest(BaseModel):
     resume: ParsedResume
 
 
+class TailoringTaskCreateRequest(TailoringBuildRequest):
+    request_id: Optional[UUID] = None
+
+
 class TailoringInitialBuildResponse(BaseModel):
     thread_id: str
     status: Literal["initial_ready"] = "initial_ready"
@@ -227,3 +232,24 @@ class FormalResumeUpdateRequest(BaseModel):
 
 class ConfirmTailoredResumeRequest(BaseModel):
     formal_resume: FormalResumeDocument
+
+
+class TailoringTaskResponse(BaseModel):
+    thread_id: str
+    status: Literal[
+        "queued", "running", "saving", "initial_ready", "awaiting_confirmation",
+        "needs_attention", "failed", "cancelling", "cancelled", "completed",
+    ]
+    target: Literal["initial", "full"]
+    created_at: str
+    updated_at: str
+    graph_version: int
+    input_hash: str
+    current_node: Optional[str] = None
+    failed_node: Optional[str] = None
+    error: Optional[str] = None
+    revision_count: int = 0
+    draft_version: int = 0
+    audit_version: int = 0
+    preview: Optional[TailoringInitialBuildResponse] = None
+    result: Optional[TailoringBuildResponse] = None

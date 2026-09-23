@@ -26,9 +26,11 @@ class TailoringState(TypedDict, total=False):
     review_only: bool
     audited_draft: dict[str, Any]
     latest_report: dict[str, Any]
+    draft_version: int
+    audit_version: int
 
 
-def build_tailoring_graph(client=None, checkpointer=None):
+def build_tailoring_graph(client=None, checkpointer=None, before_node=None):
     # Imported lazily to avoid making the existing domain service depend on graph setup.
     from app.services.tailoring import (
         SUPPORTED,
@@ -55,6 +57,8 @@ def build_tailoring_graph(client=None, checkpointer=None):
             "initial_draft": draft.model_dump(mode="json"),
             "revision_count": 0,
             "status": "initial_ready",
+            "draft_version": 1,
+            "audit_version": 0,
         }
 
     def initial_fact_check_node(state: TailoringState):
@@ -66,6 +70,7 @@ def build_tailoring_graph(client=None, checkpointer=None):
             "audited_draft": state["initial_draft"],
             "latest_report": report.model_dump(mode="json"),
             "status": "reviewing",
+            "audit_version": state.get("draft_version", 1),
         }
 
     def needs_revision(state: TailoringState):
@@ -87,6 +92,7 @@ def build_tailoring_graph(client=None, checkpointer=None):
         return {
             "revised_draft": revised.model_dump(mode="json"),
             "revision_count": state.get("revision_count", 0) + 1,
+            "draft_version": state.get("draft_version", 1) + (revised != current),
         }
 
     def keep_node(state: TailoringState):
@@ -99,7 +105,10 @@ def build_tailoring_graph(client=None, checkpointer=None):
     def final_fact_check_node(state: TailoringState):
         # An unchanged draft has the same audit; do not pay for another LLM call.
         if state["revised_draft"] == state["audited_draft"]:
-            return {"final_fact_check_report": state["latest_report"]}
+            return {
+                "final_fact_check_report": state["latest_report"],
+                "audit_version": state.get("draft_version", 1),
+            }
         jd, resume = models(state)
         revised = TailoredResumeDraft.model_validate(state["revised_draft"])
         report = fact_check_resume(jd.jd_id, resume, revised, client=client)
@@ -107,6 +116,7 @@ def build_tailoring_graph(client=None, checkpointer=None):
             "final_fact_check_report": report.model_dump(mode="json"),
             "audited_draft": state["revised_draft"],
             "latest_report": report.model_dump(mode="json"),
+            "audit_version": state.get("draft_version", 1),
         }
 
     def needs_follow_up_revision(state: TailoringState):
@@ -117,14 +127,22 @@ def build_tailoring_graph(client=None, checkpointer=None):
         return "revise" if state.get("revision_count", 0) < 2 else "needs_attention"
 
     builder = StateGraph(TailoringState)
-    builder.add_node("match_requirements", match_node)
-    builder.add_node("generate_initial_draft", draft_node)
-    builder.add_node("fact_check_initial", initial_fact_check_node)
-    builder.add_node("revise_draft", revise_node)
-    builder.add_node("keep_draft", keep_node)
-    builder.add_node("fact_check_final", final_fact_check_node)
-    builder.add_node("approved", lambda state: {"status": "awaiting_confirmation"})
-    builder.add_node("needs_attention", lambda state: {"status": "needs_attention"})
+
+    def add_node(name, function):
+        def guarded(state):
+            if before_node is not None:
+                before_node(name)
+            return function(state)
+        builder.add_node(name, guarded)
+
+    add_node("match_requirements", match_node)
+    add_node("generate_initial_draft", draft_node)
+    add_node("fact_check_initial", initial_fact_check_node)
+    add_node("revise_draft", revise_node)
+    add_node("keep_draft", keep_node)
+    add_node("fact_check_final", final_fact_check_node)
+    add_node("approved", lambda state: {"status": "awaiting_confirmation"})
+    add_node("needs_attention", lambda state: {"status": "needs_attention"})
     # The review-only entry is used by legacy Python service callers. HTTP callers
     # resume the existing checkpoint instead of supplying draft state again.
     builder.add_conditional_edges(

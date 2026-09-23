@@ -358,6 +358,13 @@ button {
   margin: 0;
 }
 
+.task-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
 .review-issues ul {
   max-height: 240px;
   overflow-y: auto;

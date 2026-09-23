@@ -13,6 +13,7 @@ from app.schemas.tailoring import (
     TailoredResumeDraft,
 )
 from app.services.database import (
+    create_tailored_resume_document,
     list_tailored_resume_documents,
     load_json_document,
     save_tailored_resume_document,
@@ -31,12 +32,20 @@ def save_tailored_resume(
     match_report: RequirementMatchReport | None = None,
     fact_check_report: FactCheckReport | None = None,
     final_fact_check_report: FactCheckReport | None = None,
+    *,
+    tailored_resume_id: str | None = None,
+    generated_at: str | None = None,
 ) -> SavedTailoredResume:
+    if tailored_resume_id:
+        try:
+            return load_tailored_resume(tailored_resume_id)
+        except FileNotFoundError:
+            pass
     now = datetime.now(timezone.utc).isoformat()
     saved_resume = SavedTailoredResume(
-        tailored_resume_id=f"tailored_{uuid4().hex[:12]}",
+        tailored_resume_id=tailored_resume_id or f"tailored_{uuid4().hex[:12]}",
         display_name=build_unique_display_name(jd),
-        generated_at=now,
+        generated_at=generated_at or now,
         jd_id=jd.jd_id,
         resume_id=resume.resume_id,
         company=jd.company,
@@ -50,6 +59,10 @@ def save_tailored_resume(
         status="draft",
         updated_at=now,
     )
+    if tailored_resume_id:
+        return SavedTailoredResume.model_validate(
+            create_tailored_resume_document(saved_resume.model_dump(mode="json"))
+        )
     _write_tailored_resume(saved_resume)
     return saved_resume
 

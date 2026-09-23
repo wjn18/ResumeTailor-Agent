@@ -749,6 +749,11 @@ class TailoringWorkflowTests(unittest.TestCase):
         with (
             patch("app.api.tailoring.get_tailoring_runtime", return_value=runtime),
             patch("app.services.tailored_resume_storage.list_tailored_resumes", return_value=[]),
+            patch("app.services.tailored_resume_storage.load_tailored_resume", side_effect=FileNotFoundError),
+            patch(
+                "app.services.tailored_resume_storage.create_tailored_resume_document",
+                side_effect=lambda item: stored.setdefault(item["tailored_resume_id"], item),
+            ),
             patch(
                 "app.services.tailored_resume_storage._write_tailored_resume",
                 side_effect=lambda item: stored.__setitem__(item.tailored_resume_id, item),
@@ -763,7 +768,8 @@ class TailoringWorkflowTests(unittest.TestCase):
             self.assertEqual(initial["status"], "initial_ready")
             self.assertIn("百万用户", initial["formal_resume"]["advantages"][0])
             self.assertEqual(llm.fact_check_calls, 0)
-            checkpoint = runtime.graph.get_state(
+            from app.workflows.tailoring_graph import build_tailoring_graph
+            checkpoint = build_tailoring_graph(checkpointer=runtime.store.checkpointer).get_state(
                 {"configurable": {"thread_id": initial["thread_id"]}}
             )
             self.assertEqual(checkpoint.next, ("fact_check_initial",))
