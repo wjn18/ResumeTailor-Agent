@@ -1127,7 +1127,6 @@ function ResumeEditor({
         items={resume.related_skills}
         editable={editable}
         onChange={(items) => update("related_skills", items)}
-        compact
       />
     </article>
   );
@@ -1153,26 +1152,20 @@ function EditableListSection({
   items,
   editable,
   onChange,
-  compact = false,
 }: {
   title: string;
   items: string[];
   editable: boolean;
   onChange: (items: string[]) => void;
-  compact?: boolean;
 }) {
   if (!items.length && !editable) return null;
   return (
     <ResumeSection title={title}>
-      {compact && !editable ? (
-        <p className="skills-line">{items.join(" / ")}</p>
-      ) : (
-        <EditableList
-          items={items}
-          editable={editable}
-          onChange={onChange}
-        />
-      )}
+      <EditableList
+        items={items}
+        editable={editable}
+        onChange={onChange}
+      />
     </ResumeSection>
   );
 }

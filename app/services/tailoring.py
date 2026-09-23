@@ -22,6 +22,9 @@ from app.schemas.tailoring import (
     TailoredWorkExperience,
 )
 from app.services.model_client import LLMJSONClient
+from app.services.resume_wording import (
+    SKILL_WRITING_RULES, group_fallback_skills, resume_action_text, skill_prose,
+)
 
 
 MATCHED = "matched"
@@ -100,8 +103,9 @@ class ConfiguredTailoringClient(LLMJSONClient, TailoringLLMClient):
                     "The previous response did not meet the content requirements. "
                     "Return up to 6 ranked personal advantages, include every structured "
                     "work experience and honor award, and include every evidence-supported "
-                    "candidate skill in related skills even when it also appears in a "
-                    "personal advantage."
+                    "concrete candidate skill in related skills even when it also appears "
+                    "in a personal advantage. Group related skills into category sentences; "
+                    "do not return one proficiency phrase per skill."
                 ),
             )
         return draft
@@ -601,7 +605,10 @@ def assemble_formal_resume(
                 start_date=project.start_date,
                 end_date=project.end_date,
                 technologies=project.technologies,
-                bullets=[fact.fact_text for fact in project.facts],
+                bullets=[
+                    resume_action_text(fact.fact_text, resume.name)
+                    for fact in project.facts
+                ],
             )
             for project in resume.projects
         ],
@@ -702,6 +709,11 @@ def validate_tailored_resume_draft(
         return sentence.model_copy(
             update={
                 "section": section,
+                "sentence": (
+                    skill_prose(sentence.sentence)
+                    if section == "related_skills"
+                    else resume_action_text(sentence.sentence, resume.name)
+                ),
                 "source_fact_ids": source_fact_ids,
             }
         )
@@ -867,11 +879,19 @@ def rank_and_filter_draft(
         sentence
         for _, sentence in ranked_advantages[:6]
     ]
-    related_skills = (
-        ranked_candidate_skill_sentences(jd, resume, fact_scores)
-        if jd is not None and resume is not None
-        else list(draft.skills)
-    )
+    # Keep the agent's category sentences and evidence intact, including audit
+    # deletions. Rebuilding from raw skills here used to undo its writing.
+    related_skills = list(draft.skills)
+    if jd is not None and resume is not None:
+        candidates = candidate_skills(resume)
+        related_skills.sort(key=lambda sentence: (
+            -max((
+                _skill_jd_relevance(skill["name"], jd)
+                for skill in candidates
+                if _skill_name_matches_text(skill["name"], sentence.sentence)
+            ), default=0),
+            -sum(fact_scores.get(fact_id, 0) for fact_id in sentence.source_fact_ids),
+        ))
 
     return draft.model_copy(
         update={
@@ -1018,19 +1038,12 @@ def ranked_candidate_skill_sentences(
                 -_skill_jd_relevance(name, jd),
                 -evidence_score,
                 index,
-                TailoredSentence(
-                    section="related_skills",
-                    sentence=_format_skill_phrase(
-                        skill["proficiency"],
-                        name,
-                    ),
-                    source_fact_ids=evidence_fact_ids,
-                ),
+                skill,
             )
         )
 
     ranked_skills.sort(key=lambda item: item[:3])
-    return [item[3] for item in ranked_skills]
+    return group_fallback_skills([item[3] for item in ranked_skills])
 
 
 def _skill_jd_relevance(skill_name: str, jd: ParsedJD) -> int:
@@ -1093,16 +1106,6 @@ def _skill_name_matches_text(skill_name: str, text: str) -> bool:
             normalized_text,
         )
     )
-
-
-def _format_skill_phrase(proficiency: str, skill_name: str) -> str:
-    prefix = {
-        "了解": "了解",
-        "熟悉": "熟悉使用",
-        "熟练": "熟练使用",
-        "精通": "精通",
-    }.get(proficiency, "了解")
-    return f"{prefix} {skill_name}"
 
 
 def fact_index(resume: ParsedResume) -> dict[str, ExperienceFact]:
@@ -1246,6 +1249,8 @@ Forbidden:
 - Invent business outcomes.
 
 Every generated sentence must include source_fact_ids.
+Write resume bullets with an implied candidate subject, starting with an action
+or capability. Never prefix a bullet with the candidate's name, "本人", or "该候选人".
 
 Personal advantage requirements:
 - Return 3-6 concise Chinese bullet sentences, never more than 6.
@@ -1273,16 +1278,7 @@ Honor and award requirements:
 - Every bullet must cite only fact_ids belonging to that honor award.
 - Do not inflate the award level, ranking, scope, selection rate, or result.
 
-Related skill requirements:
-- Include every Candidate skill supported by one or more evidence_fact_ids.
-- A skill must still appear here when it is already mentioned in a personal
-  advantage.
-- Order required JD skills first, then JD tools and preferred skills, then other
-  JD-related skills, and finally broadly useful skills such as Excel.
-- Use the stored proficiency exactly; never upgrade it.
-- Write one short phrase per skill using only proficiency plus skill name:
-  "了解 Excel", "熟悉使用 Unity", "熟练使用 Unity", or "精通 AI".
-- Do not append an unsupported ability, workflow, result, or explanatory clause.
+{SKILL_WRITING_RULES}
 
 Return valid JSON:
 {{
@@ -1347,9 +1343,9 @@ Output support_status:
 - "supported" when the sentence is fully supported by cited facts.
 - "partially_supported" when the sentence contains wording that is not fully supported.
 - Keep "unsupported" as a possible field value, but prefer "partially_supported" with a concrete issue and suggestion.
-- For a skills sentence, its proficiency wording must not exceed the stored
-  proficiency in Candidate skills, and at least one cited source_fact_id must
-  appear in that skill's evidence_fact_ids.
+- A skills sentence may combine multiple skills. Check EACH item's proficiency
+  against Candidate skills and require cited evidence for EACH included item.
+  Shared proficiency wording must not exceed any included item's stored level.
 - Natural grammatical connectors are allowed when they add no new factual claim.
 
 For partially_supported, explain the exact problem and suggest deletion or a safer rewrite.
@@ -1405,11 +1401,10 @@ Rules:
 - Preserve every valid work_experience_id and revise only its content bullets.
 - Preserve every valid honor_award_id and revise only its description bullets.
   Never change the award name, issuer, date, level, or ranking.
-- For related skills, preserve every evidence-supported Candidate skill even when
-  it is covered by personal advantages. Keep its stored proficiency, use one
-  proficiency-plus-name phrase per skill, and order JD-related skills before
-  broadly useful skills.
+- Use an implied candidate subject; do not prefix bullets with the candidate's name.
 - Return the complete revised draft as valid JSON.
+
+{SKILL_WRITING_RULES}
 
 Return valid JSON:
 {{
@@ -1479,21 +1474,20 @@ def _draft_needs_content_retry(draft: dict, resume: ParsedResume) -> bool:
         or len(honor_awards) != len(resume.honor_awards)
     ):
         return True
-    expected_skill_count = len(
-        {
-            skill["name"].strip().casefold()
-            for skill in candidate_skills(resume)
-            if skill["name"].strip() and skill["evidence_fact_ids"]
-        }
-    )
-    if (
-        not isinstance(skills, list)
-        or len(skills) < expected_skill_count
-    ):
+    # Category sentences can cover many skills; sentence count is not coverage.
+    supported_skills = [
+        skill for skill in candidate_skills(resume)
+        if skill["name"].strip() and skill["evidence_fact_ids"]
+        and skill["name"].strip() not in {"接口", "模块", "系统", "功能", "开发"}
+    ]
+    if not isinstance(skills, list) or (supported_skills and not skills):
         return True
     return any(
         not isinstance(item, dict)
         or len(str(item.get("sentence", "")).strip()) < 3
+        or not item.get("source_fact_ids")
+        or "/" in str(item.get("sentence", ""))
+        or "／" in str(item.get("sentence", ""))
         for item in skills
     )
 

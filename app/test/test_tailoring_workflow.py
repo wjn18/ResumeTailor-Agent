@@ -38,6 +38,7 @@ from app.services.tailoring import (
     build_tailored_resume,
     candidate_skills,
     collect_resume_facts,
+    ranked_candidate_skill_sentences,
     rank_and_filter_draft,
     review_tailored_resume,
     validate_fact_check_report,
@@ -579,6 +580,7 @@ class TailoringWorkflowTests(unittest.TestCase):
         draft = TailoredResumeDraft(
             jd_id="jd_test",
             resume_id=resume.resume_id,
+            skills=ranked_candidate_skill_sentences(sample_jd(), resume),
             summary=[
                 TailoredSentence(
                     section="advantages",
@@ -610,11 +612,11 @@ class TailoringWorkflowTests(unittest.TestCase):
 
         self.assertEqual(
             [item.sentence for item in result.skills],
-            ["熟练使用 FastAPI", "熟悉使用 Excel"],
+            ["框架与工具：熟练使用 FastAPI；熟悉使用 Excel。"],
         )
         self.assertEqual(
             result.skills[0].source_fact_ids,
-            ["fact_001"],
+            ["fact_001", "fact_excel"],
         )
 
     def test_formal_work_experience_preserves_parsed_metadata(self):

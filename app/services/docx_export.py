@@ -189,7 +189,7 @@ def _add_resume_content(
                 technologies.paragraph_format.space_after = Pt(2)
                 run = technologies.add_run(
                     "技术："
-                    + " / ".join(
+                    + "、".join(
                         technology.strip()
                         for technology in project.technologies
                         if technology.strip()
@@ -219,12 +219,7 @@ def _add_resume_content(
                 _add_bullet(document, bullet)
 
     related_skills = resume.related_skills or resume.skills
-    if related_skills:
-        document.add_heading("相关技能", level=1)
-        paragraph = document.add_paragraph()
-        paragraph.paragraph_format.space_after = Pt(0)
-        run = paragraph.add_run("  /  ".join(related_skills))
-        _set_run_font(run, size=10, color=INK)
+    _add_text_section(document, "相关技能", related_skills, bullets=True)
 
 
 def _add_education_section(document: Document, education_experiences) -> None:
