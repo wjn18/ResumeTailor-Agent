@@ -102,6 +102,14 @@ class TailoringRuntimeTests(unittest.TestCase):
             "app.services.tailored_resume_storage.create_tailored_resume_document", side_effect=insert,
         ))
 
+        def project(payload):
+            existing = self.stored[payload["tailored_resume_id"]]
+            if (existing.content_version, existing.status == "confirmed") < (payload["content_version"], payload["status"] == "confirmed"):
+                self.stored[existing.tailored_resume_id] = SavedTailoredResume.model_validate(payload)
+            return self.stored[existing.tailored_resume_id].model_dump(mode="json")
+
+        self.enterContext(patch("app.services.tailored_resume_storage.project_tailored_resume_document", side_effect=project))
+
     def use_runtime(self, llm, **kwargs):
         runtime = TailoringRuntime(client=llm, **kwargs)
         mocked = patch("app.api.tailoring.get_tailoring_runtime", return_value=runtime)

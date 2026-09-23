@@ -20,17 +20,16 @@ from app.schemas.tailoring import (
     TailoringReviewResponse,
     TailoringTaskResponse,
     TailoringTaskCreateRequest,
+    TailoringDecisionRequest,
 )
 from app.services.tailored_resume_storage import (
     list_tailored_resumes,
     load_tailored_resume,
-    mark_tailored_resume_confirmed,
     save_tailored_resume,
     update_formal_resume,
 )
 from app.services.docx_export import export_formal_resume_docx
 from app.services.tailoring import (
-    SUPPORTED,
     assemble_formal_resume,
     fact_check_resume,
     match_requirements,
@@ -65,13 +64,21 @@ def _checked_result(job):
 def _task_response(job):
     # Restore the latest saved edits rather than an old generation snapshot.
     result = job.get("result")
-    if result and result.get("saved_resume"):
+    if job["graph_version"] < 3 and result and result.get("saved_resume"):
         saved = load_tailored_resume(result["saved_resume"]["tailored_resume_id"])
         result = {**result, "saved_resume": saved.model_dump(mode="json"), "formal_resume": saved.formal_resume}
         job = {**job, "result": result}
-        if saved.status == "confirmed":
+        if saved.status == "confirmed" and job["graph_version"] < 3:
             job["status"] = "completed"
     return TailoringTaskResponse.model_validate(job)
+
+
+@router.post("/tasks/{thread_id}/decision", response_model=TailoringTaskResponse, status_code=202)
+def decide_tailoring_task(thread_id: str, payload: TailoringDecisionRequest):
+    try:
+        return _task_response(get_tailoring_runtime().decide(thread_id, payload))
+    except (RunNotFound, RunBusy, RunConflict) as exc:
+        raise _workflow_error(exc) from exc
 
 
 @router.post("/tasks", response_model=TailoringTaskResponse, status_code=202)
@@ -96,7 +103,7 @@ def get_tailoring_task(thread_id: str):
 def resume_tailoring_task(thread_id: str):
     try:
         return _task_response(get_tailoring_runtime().resume(thread_id))
-    except (RunNotFound, RunConflict) as exc:
+    except (RunNotFound, RunBusy, RunConflict) as exc:
         raise _workflow_error(exc) from exc
 
 
@@ -206,6 +213,9 @@ def update_saved_resume_content(
     payload: FormalResumeUpdateRequest,
 ):
     try:
+        saved = load_tailored_resume(tailored_resume_id)
+        if saved.workflow_thread_id or len(tailored_resume_id.removeprefix("tailored_")) == 32:
+            raise HTTPException(status_code=409, detail="请通过任务 decision 接口保存修改并重新审核。")
         return update_formal_resume(
             tailored_resume_id,
             payload.formal_resume,
@@ -223,21 +233,8 @@ def confirm_saved_resume(
     payload: ConfirmTailoredResumeRequest,
 ):
     try:
-        saved = load_tailored_resume(tailored_resume_id)
-        if saved.final_fact_check_report and any(
-            check.support_status != SUPPORTED
-            for check in saved.final_fact_check_report.checks
-        ):
-            raise HTTPException(status_code=409, detail="简历仍有未通过事实审核的内容，请重新生成。")
-        docx_path = export_formal_resume_docx(
-            tailored_resume_id,
-            payload.formal_resume,
-        )
-        return mark_tailored_resume_confirmed(
-            tailored_resume_id,
-            payload.formal_resume,
-            docx_path.name,
-        )
+        load_tailored_resume(tailored_resume_id)
+        raise HTTPException(status_code=409, detail="请通过任务 decision 接口确认；旧版任务先 resume 升级，没有任务记录的简历需重新生成。")
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Tailored resume not found.") from exc
     except ValueError as exc:
@@ -262,9 +259,16 @@ def download_saved_resume_docx(tailored_resume_id: str):
             detail="The saved record does not contain formal resume content.",
         )
 
+    if not saved_resume.workflow_thread_id:
+        raise HTTPException(status_code=409, detail="历史简历没有正文版本审核记录，请重新生成后确认。")
+    try:
+        document = get_tailoring_runtime().confirmed_document(saved_resume.workflow_thread_id, saved_resume)
+    except (RunNotFound, RunBusy, RunConflict) as exc:
+        raise _workflow_error(exc) from exc
+
     docx_path = export_formal_resume_docx(
-        tailored_resume_id,
-        saved_resume.formal_resume,
+        f"{tailored_resume_id}_{saved_resume.content_hash}",
+        document,
     )
     return FileResponse(
         path=docx_path,

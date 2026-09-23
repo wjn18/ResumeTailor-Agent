@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from app.schemas.jds import ParsedJD
 from app.schemas.resumes import ParsedResume
@@ -28,9 +29,17 @@ class TailoringState(TypedDict, total=False):
     latest_report: dict[str, Any]
     draft_version: int
     audit_version: int
+    formal_resume: dict[str, Any]
+    content_version: int
+    reviewed_content_version: int
+    content_hash: str
+    reviewed_content_hash: str
+    content_report: dict[str, Any]
+    last_action_id: str
+    decision: str
 
 
-def build_tailoring_graph(client=None, checkpointer=None, before_node=None):
+def build_tailoring_graph(client=None, checkpointer=None, before_node=None, *, human_loop=False):
     # Imported lazily to avoid making the existing domain service depend on graph setup.
     from app.services.tailoring import (
         SUPPORTED,
@@ -39,7 +48,11 @@ def build_tailoring_graph(client=None, checkpointer=None, before_node=None):
         rank_and_filter_draft,
         revise_after_fact_check,
         rewrite_resume,
+        assemble_formal_resume,
     )
+    from app.schemas.tailoring import FormalResumeDocument
+    from app.services.formal_resume_review import content_hash, review_formal_resume
+    from app.storage.workflow_base import RunConflict
 
     def models(state: TailoringState):
         return ParsedJD.model_validate(state["jd"]), ParsedResume.model_validate(state["resume"])
@@ -126,6 +139,58 @@ def build_tailoring_graph(client=None, checkpointer=None, before_node=None):
             return "approved"
         return "revise" if state.get("revision_count", 0) < 2 else "needs_attention"
 
+    def prepare_document(state):
+        jd, resume = models(state)
+        document = assemble_formal_resume(jd, resume, TailoredResumeDraft.model_validate(state["revised_draft"]))
+        digest = content_hash(document)
+        return {
+            "formal_resume": document.model_dump(mode="json"), "content_version": 1,
+            "reviewed_content_version": 1, "content_hash": digest,
+            "reviewed_content_hash": digest, "content_report": state["final_fact_check_report"],
+        }
+
+    def human_decision(state):
+        decision = interrupt({
+            "kind": "review_resume", "content_version": state["content_version"],
+            "content_hash": state["content_hash"], "status": state["status"],
+            "can_confirm": state["status"] == "awaiting_confirmation",
+        })
+        if decision["expected_version"] != state["content_version"]:
+            raise RunConflict("正文版本已变更，请刷新后操作。")
+        updates = {"last_action_id": decision["request_id"], "decision": decision["action"]}
+        if decision["action"] == "edit":
+            document = FormalResumeDocument.model_validate(decision["formal_resume"])
+            updates.update(
+                formal_resume=document.model_dump(mode="json"),
+                content_version=state["content_version"] + 1, content_hash=content_hash(document),
+                reviewed_content_version=0, reviewed_content_hash="", content_report={},
+                status="reviewing",
+            )
+        elif decision["action"] != "confirm" or not can_confirm(state):
+            raise RunConflict("当前正文尚未通过审核，无法确认。")
+        return updates
+
+    def can_confirm(state):
+        return (state["status"] == "awaiting_confirmation"
+                and state["content_version"] == state["reviewed_content_version"]
+                and content_hash(state["formal_resume"]) == state["reviewed_content_hash"]
+                and all(item["support_status"] == SUPPORTED for item in state["content_report"]["checks"]))
+
+    def review_edit(state):
+        jd, resume = models(state)
+        report = review_formal_resume(jd, resume, FormalResumeDocument.model_validate(state["formal_resume"]), client)
+        return {
+            "content_report": report.model_dump(mode="json"),
+            "reviewed_content_version": state["content_version"],
+            "reviewed_content_hash": state["content_hash"],
+            "status": "awaiting_confirmation" if all(c.support_status == SUPPORTED for c in report.checks) else "needs_attention",
+        }
+
+    def confirm_document(state):
+        if not can_confirm(state):
+            raise RunConflict("当前正文尚未通过审核，无法确认。")
+        return {"status": "completed"}
+
     builder = StateGraph(TailoringState)
 
     def add_node(name, function):
@@ -162,8 +227,21 @@ def build_tailoring_graph(client=None, checkpointer=None, before_node=None):
         needs_follow_up_revision,
         {"revise": "revise_draft", "approved": "approved", "needs_attention": "needs_attention"},
     )
-    builder.add_edge("approved", END)
-    builder.add_edge("needs_attention", END)
+    if human_loop:
+        add_node("prepare_document", prepare_document)
+        add_node("human_decision", human_decision)
+        add_node("review_edited_document", review_edit)
+        add_node("confirm_document", confirm_document)
+        builder.add_edge("approved", "prepare_document")
+        builder.add_edge("needs_attention", "prepare_document")
+        builder.add_edge("prepare_document", "human_decision")
+        builder.add_conditional_edges("human_decision", lambda state: state["decision"],
+                                      {"edit": "review_edited_document", "confirm": "confirm_document"})
+        builder.add_edge("review_edited_document", "human_decision")
+        builder.add_edge("confirm_document", "human_decision")
+    else:
+        builder.add_edge("approved", END)
+        builder.add_edge("needs_attention", END)
     return builder.compile(checkpointer=checkpointer)
 
 

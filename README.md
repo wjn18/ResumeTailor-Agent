@@ -235,8 +235,57 @@ uv run python -m databae.migrate_to_postgres
   使用连接代理时必须支持会话锁，不能使用 transaction pooling 模式。
 
 运行时内存适配器仅用于显式构造的测试。生产启动若没有可用的 PostgreSQL 会失败，
-不会降级为内存存储。人工确认的 `interrupt()`、用户编辑版本与复审绑定、实时事件推送
-留待下一阶段；当前前端使用任务查询轮询。
+不会降级为内存存储。当前前端使用任务查询轮询，暂未接入实时事件推送。
+
+## LangGraph Phase 3：人工确认与正文版本审核
+
+生产任务使用流程版本 3。生成和审核后，图通过 `interrupt()` 暂停在
+`human_decision` 节点；等待用户期间不占用执行器或数据库连接。用户操作持久化后，
+执行器用同一任务 ID 和 `Command(resume={interrupt_id: decision})` 接续。
+接口实现遵循 [LangGraph interrupt 文档](https://reference.langchain.com/python/langgraph/types/interrupt)。
+
+```mermaid
+flowchart LR
+    A[生成与事实审核] --> B[等待用户操作]
+    B -->|编辑| C[正文版本加一]
+    C --> D[完整正文复审]
+    D --> B
+    B -->|确认已审核版本| E[确认并允许导出]
+    E --> B
+```
+
+`POST /tailoring/tasks/{thread_id}/decision` 返回 202，接收以下字段：
+
+| 字段 | 规则 |
+| --- | --- |
+| `request_id` | 本次操作的 UUID；相同 ID 和内容重试返回任务当前状态，复用 ID 改变内容返回 409。 |
+| `action` | `edit` 或 `confirm`。 |
+| `expected_version` | 用户正在查看的 `content_version`；与服务器版本不符返回 409。 |
+| `formal_resume` | 仅 `edit` 必填；`confirm` 禁止携带正文或客户端审核结果。 |
+
+任务查询新增 `content_version`、`reviewed_content_version`、`content_hash`、
+`reviewed_content_hash`、`current_document` 和 `pending_decision`。这些字段描述正式正文，
+与自动生成阶段的 `draft_version`、`audit_version` 分开；`current_document` 支持复审失败或
+页面刷新后恢复用户已提交的内容。`pending_decision` 包含待操作版本及能否确认。
+
+- 保存编辑后产生新正文版本，旧审核立即失效。复审覆盖完整正式简历，包括姓名、联系方式、
+  标题、教育、工作、项目、荣誉和技能；一条工作/教育等结构化记录连同其字段整体审核，
+  避免将原有事实挪到另一家公司后仍视为通过。依据只来自任务原始输入，遗漏的审核条目按未通过处理。
+- 用户编辑不会触发自动改写；复审未通过时保留原文并展示问题，允许继续修改。通过后回到
+  `awaiting_confirmation`，必须再次确认才能变为 `completed`。已确认的任务仍可进入下一轮编辑。
+- 前端提供“保存并重新审核”和“确认并导出”，编辑中禁用确认，展示当前正文版本。
+  只有图中确认状态、正文版本及审核哈希一致时才允许下载 DOCX；排队、执行、失败、
+  取消或再次编辑都会阻止下载。文件使用正文哈希区分版本。
+- 编辑和确认共用任务执行锁。操作回执及 interrupt ID 持久化，崩溃后不会把同一操作重复应用
+  到下一个人工节点。保存结果按 `(正文版本, 是否确认)` 原子递增，旧执行器不能覆盖新结果。
+  检查点和任务 SQL 共用连接锁，防止并发 pipeline 操作干扰同一数据库会话。
+- Phase 2 任务仍可恢复生成；其结果通过 `/resume` 升级到新版流程，保留最新已保存正文，
+  重新审核后等待确认。前端恢复旧任务时自动执行升级。升级意图先持久化，支持中途重启。
+- 旧 `/saved/{id}/confirm` 不再直接确认任意正文，返回 409；任务生成的正文也不能通过旧
+  `/content` 接口绕过复审。没有任务记录的历史 `/save` 文档可以查看和编辑，但需重新生成
+  才能获得可确认的审核记录。`/save` 上传的报告不作为导出授权依据。
+
+本阶段没有新增环境变量；仍需现有的 PostgreSQL 任务库。未提交的网页编辑不会自动保存。
 
 ## 测试
 
@@ -265,5 +314,7 @@ $env:TEST_DATABASE_URL = "postgresql://test_user:password@localhost:5432/resume_
 覆盖六张业务表的 CRUD、约束冲突与回滚、级联删除、JSON 文档覆盖写入、定制简历排序，
 以及简历保存、修改、确认、DOCX 下载和重新编辑流程。任务集成测试还覆盖真实进程崩溃后的
 自动恢复、跨连接互斥、锁连接失效、取消、失败节点重试、幂等创建及保存回执丢失后的重放。
+人工操作测试覆盖 interrupt 重启恢复、编辑审核中进程崩溃、确认回执丢失、旧版本冲突、
+重复操作、过期保存写入拦截、历史任务升级，以及未通过审核时无法确认或导出。
 测试账号还需要终止其自身测试连接的权限，以验证锁连接断开。
 未设置 `TEST_DATABASE_URL` 时跳过这些集成测试。

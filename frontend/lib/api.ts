@@ -2,7 +2,6 @@ import type {
   FormalResume,
   ParsedJD,
   ParsedResume,
-  SavedTailoredResume,
   TailoringInitialBuildResponse,
   TailoringReviewResponse,
   TailoringTask,
@@ -133,34 +132,6 @@ export async function reviewTailoredResume(
   });
 }
 
-export async function saveResumeEdits(
-  tailoredResumeId: string,
-  formalResume: FormalResume,
-): Promise<SavedTailoredResume> {
-  return request<SavedTailoredResume>(
-    `/tailoring/saved/${tailoredResumeId}/content`,
-    {
-      method: "PATCH",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({formal_resume: formalResume}),
-    },
-  );
-}
-
-export async function confirmResume(
-  tailoredResumeId: string,
-  formalResume: FormalResume,
-): Promise<SavedTailoredResume> {
-  return request<SavedTailoredResume>(
-    `/tailoring/saved/${tailoredResumeId}/confirm`,
-    {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({formal_resume: formalResume}),
-    },
-  );
-}
-
 export function docxDownloadUrl(tailoredResumeId: string): string {
   return `${API_URL}/tailoring/saved/${tailoredResumeId}/docx`;
 }
@@ -183,4 +154,18 @@ export function resumeTailoringTask(threadId: string): Promise<TailoringTask> {
 
 export function cancelTailoringTask(threadId: string): Promise<TailoringTask> {
   return request<TailoringTask>(`/tailoring/tasks/${encodeURIComponent(threadId)}/cancel`, {method: "POST"});
+}
+
+export function submitTailoringDecision(
+  threadId: string,
+  expectedVersion: number,
+  action: "edit" | "confirm",
+  formalResume?: FormalResume,
+): Promise<TailoringTask> {
+  return request<TailoringTask>(`/tailoring/tasks/${encodeURIComponent(threadId)}/decision`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({request_id: crypto.randomUUID(), action,
+      expected_version: expectedVersion, formal_resume: formalResume}),
+  });
 }

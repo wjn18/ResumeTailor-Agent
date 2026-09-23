@@ -150,7 +150,7 @@ class PostgresIntegrationTests(unittest.TestCase):
         self.assertEqual(rows[0][1].year, 2025)
         self.assertIsNotNone(rows[0][2])
 
-    def test_saved_resume_edit_confirm_download_and_edit_again(self):
+    def test_legacy_saved_resume_edit_requires_workflow_review_before_export(self):
         resume = ParsedResume(resume_id="resume_test", name="张三")
         jd = ParsedJD(jd_id="jd_test", raw_text_length=10, company="示例", job_title="开发")
         draft = TailoredResumeDraft(jd_id=jd.jd_id, resume_id=resume.resume_id)
@@ -170,14 +170,12 @@ class PostgresIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with patch("app.services.docx_export.TAILORED_RESUME_EXPORT_DIR", Path(directory)):
                 confirmed = self.client.post(url + "/confirm", json={"formal_resume": formal.model_dump()})
-                self.assertEqual(confirmed.status_code, 200, confirmed.text)
-                self.assertEqual(confirmed.json()["status"], "confirmed")
+                self.assertEqual(confirmed.status_code, 409, confirmed.text)
                 download = self.client.get(url + "/docx")
-                self.assertEqual(download.status_code, 200)
-                self.assertTrue(download.content.startswith(b"PK"))
+                self.assertEqual(download.status_code, 409)
         reloaded = self.client.get(url).json()
         self.assertEqual(reloaded["formal_resume"]["advantages"], formal.advantages)
-        self.assertIsNotNone(reloaded["confirmed_at"])
+        self.assertIsNone(reloaded["confirmed_at"])
         self.client.patch(url + "/content", json={"formal_resume": formal.model_dump()})
         reloaded = self.client.get(url).json()
         self.assertEqual(reloaded["status"], "draft")

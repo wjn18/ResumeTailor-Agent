@@ -178,6 +178,27 @@ class PostgresStorage(Storage):
                 ).fetchone()
             return row["payload"]
 
+    def project_tailored_resume_document(self, payload: dict) -> dict:
+        with self._connect() as connection:
+            row = connection.execute(
+                """UPDATE tailored_resume_documents
+                   SET payload=%s, status=%s, updated_at=CURRENT_TIMESTAMP
+                   WHERE tailored_resume_id=%s AND
+                     (COALESCE((payload->>'content_version')::integer,0),
+                      CASE WHEN status='confirmed' THEN 1 ELSE 0 END) < (%s,%s)
+                   RETURNING payload""",
+                (Jsonb(payload), payload["status"], payload["tailored_resume_id"],
+                 payload["content_version"], int(payload["status"] == "confirmed")),
+            ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    "SELECT payload FROM tailored_resume_documents WHERE tailored_resume_id=%s",
+                    (payload["tailored_resume_id"],),
+                ).fetchone()
+            if row is None:
+                raise FileNotFoundError(payload["tailored_resume_id"])
+            return row["payload"]
+
 
 def _ensure_document_table(table: str, id_column: str) -> None:
     allowed = {

@@ -14,6 +14,7 @@ from app.schemas.tailoring import (
 )
 from app.services.database import (
     create_tailored_resume_document,
+    project_tailored_resume_document,
     list_tailored_resume_documents,
     load_json_document,
     save_tailored_resume_document,
@@ -112,6 +113,9 @@ def update_formal_resume(
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "confirmed_at": None,
         "docx_file_name": None,
+        "final_fact_check_report": None,
+        "reviewed_content_version": 0,
+        "reviewed_content_hash": None,
     })
     _write_tailored_resume(updated)
     return updated
@@ -137,3 +141,24 @@ def mark_tailored_resume_confirmed(
 
 def _write_tailored_resume(saved_resume: SavedTailoredResume) -> None:
     save_tailored_resume_document(saved_resume.model_dump(mode="json"))
+
+
+def project_workflow_resume(saved, thread_id, state):
+    """Idempotent business projection of checkpointed approval state."""
+    changes = {
+        "workflow_thread_id": thread_id,
+        "formal_resume": FormalResumeDocument.model_validate(state["formal_resume"]),
+        "content_version": state["content_version"],
+        "reviewed_content_version": state["reviewed_content_version"],
+        "content_hash": state["content_hash"],
+        "reviewed_content_hash": state["reviewed_content_hash"],
+        "final_fact_check_report": FactCheckReport.model_validate(state["content_report"]),
+        "status": "confirmed" if state["status"] == "completed" else "draft",
+        "docx_file_name": f"{saved.tailored_resume_id}.docx" if state["status"] == "completed" else None,
+    }
+    if all(getattr(saved, key) == value for key, value in changes.items()):
+        return saved
+    now = datetime.now(timezone.utc).isoformat()
+    changes.update(updated_at=now, confirmed_at=now if state["status"] == "completed" else None)
+    updated = saved.model_copy(update=changes)
+    return SavedTailoredResume.model_validate(project_tailored_resume_document(updated.model_dump(mode="json")))

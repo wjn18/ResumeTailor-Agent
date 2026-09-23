@@ -43,3 +43,7 @@ def save_tailored_resume_document(payload: dict) -> None:
 
 def create_tailored_resume_document(payload: dict) -> dict:
     return get_storage().create_tailored_resume_document(payload)
+
+
+def project_tailored_resume_document(payload: dict) -> dict:
+    return get_storage().project_tailored_resume_document(payload)

@@ -71,3 +71,10 @@ class Storage(ABC):
 
         Replayed workflow saves must never overwrite subsequent user edits.
         """
+
+    @abstractmethod
+    def project_tailored_resume_document(self, payload: dict) -> dict:
+        """Advance a workflow document monotonically by (content_version, confirmed).
+
+        Return the stored payload; an older or equal projection never overwrites it.
+        """

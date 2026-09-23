@@ -22,12 +22,11 @@ import {
   getTailoringTask,
   resumeTailoringTask,
   cancelTailoringTask,
-  confirmResume,
+  submitTailoringDecision,
   docxDownloadUrl,
   mergePersonalFacts,
   parseJD,
   parseResume,
-  saveResumeEdits,
 } from "@/lib/api";
 import type {
   FormalEducation,
@@ -126,6 +125,7 @@ export default function Home() {
   const [tailoredResumeId, setTailoredResumeId] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [contentVersion, setContentVersion] = useState(0);
   const [generationStage, setGenerationStage] =
     useState<GenerationStage>("idle");
   const [reviewState, setReviewState] = useState<ReviewState>("idle");
@@ -160,23 +160,31 @@ export default function Home() {
     } catch { /* The task still works without browser storage. */ }
   }
 
-  async function followTask(threadId: string, runId: number) {
-    let previewShown = false;
+  async function followTask(threadId: string, runId: number, hasPreview = false) {
+    let previewShown = hasPreview;
     try {
       while (runId === generationRunRef.current) {
         const task = await getTailoringTask(threadId);
         if (runId !== generationRunRef.current) return;
-        if (task.preview && !previewShown) {
-          setFormalResume(task.preview.formal_resume);
+        if (task.graph_version === 2 && task.result) {
+          await resumeTailoringTask(threadId);
+          continue;
+        }
+        if ((task.current_document || task.preview) && !previewShown) {
+          setFormalResume(task.current_document || task.preview!.formal_resume);
           setView("preview");
           previewShown = true;
         }
         if (task.result) {
+          setContentVersion(task.content_version);
           setView("preview");
           await displayReview(task.result, runId);
-          return;
+          return task;
         }
-        if (task.status === "failed") throw new Error(task.error || "任务执行失败，可重试继续。");
+        if (task.status === "failed") {
+          if (task.current_document) setFormalResume(task.current_document);
+          throw new Error(task.error || "任务执行失败，可重试继续。");
+        }
         if (task.status === "cancelled") {
           returnToInputs();
           return;
@@ -206,6 +214,9 @@ export default function Home() {
     setReviewIssues([]);
     setUpdatingModule(null);
     setTailoredResumeId(null);
+    setContentVersion(0);
+    setIsEditing(false);
+    setFormalResume(null);
     rememberTask(null);
     setGenerationStage(stage);
     setView("generating");
@@ -264,6 +275,7 @@ export default function Home() {
     if (runId !== generationRunRef.current) return;
 
     if (reviewResult.status === "needs_attention") {
+      setTailoredResumeId(reviewResult.saved_resume?.tailored_resume_id || null);
       setReviewIssues(
         reviewResult.final_fact_check_report.checks
           .filter((check) => check.support_status !== "supported")
@@ -290,7 +302,7 @@ export default function Home() {
     setGenerationStage("review");
     try {
       await resumeTailoringTask(reviewThreadId);
-      await followTask(reviewThreadId, runId);
+      await followTask(reviewThreadId, runId, Boolean(formalResume));
     } catch (requestError) {
       if (runId !== generationRunRef.current) return;
       setError(formatRequestError("重试审核", requestError));
@@ -309,7 +321,7 @@ export default function Home() {
       else {
         setReviewState("cancelling");
         const runId = ++generationRunRef.current;
-        await followTask(reviewThreadId, runId);
+        await followTask(reviewThreadId, runId, Boolean(formalResume));
       }
     } catch (requestError) {
       if (cancelRunId !== generationRunRef.current) return;
@@ -403,10 +415,11 @@ export default function Home() {
       await wait(360);
     }
     setUpdatingModule(null);
+    setFormalResume(finalResume);
   }
 
   async function handleEditToggle() {
-    if (!formalResume || !tailoredResumeId) return;
+    if (!formalResume || !reviewThreadId || contentVersion < 1) return;
     if (!isEditing) {
       setIsEditing(true);
       return;
@@ -415,8 +428,11 @@ export default function Home() {
     setIsSaving(true);
     setError(null);
     try {
-      await saveResumeEdits(tailoredResumeId, formalResume);
+      await submitTailoringDecision(reviewThreadId, contentVersion, "edit", formalResume);
       setIsEditing(false);
+      setReviewState("reviewing");
+      setReviewIssues([]);
+      await followTask(reviewThreadId, ++generationRunRef.current, true);
     } catch (requestError) {
       setError(
         formatRequestError("保存修改", requestError),
@@ -427,11 +443,14 @@ export default function Home() {
   }
 
   async function handleComplete() {
-    if (!formalResume || !tailoredResumeId || reviewState !== "ready") return;
+    if (!formalResume || !tailoredResumeId || !reviewThreadId || reviewState !== "ready" || isEditing || contentVersion < 1) return;
     setIsSaving(true);
     setError(null);
     try {
-      await confirmResume(tailoredResumeId, formalResume);
+      await submitTailoringDecision(reviewThreadId, contentVersion, "confirm");
+      setReviewState("reviewing");
+      const task = await followTask(reviewThreadId, ++generationRunRef.current, true);
+      if (task?.status !== "completed") return;
       const anchor = document.createElement("a");
       anchor.href = docxDownloadUrl(tailoredResumeId);
       anchor.download = "";
@@ -440,6 +459,7 @@ export default function Home() {
       anchor.remove();
       window.setTimeout(resetWorkspace, 700);
     } catch (requestError) {
+      setReviewState("error");
       setError(
         formatRequestError("确认并导出", requestError),
       );
@@ -621,7 +641,7 @@ export default function Home() {
 
           {reviewState === "needs_attention" && (
             <div className="review-issues" role="alert">
-              <p>自动修订后仍有内容未通过事实审核，暂时无法确认导出。请返回补充个人信息或调整输入后重新生成。</p>
+              <p>当前版本仍有内容未通过事实审核，暂时无法确认导出。可以修改后重新审核，或返回补充个人信息后重新生成。</p>
               <ul>
                 {reviewIssues.map((issue, index) => <li key={index}>{issue}</li>)}
               </ul>
@@ -631,18 +651,19 @@ export default function Home() {
           <ResumeEditor
             resume={formalResume}
             onChange={setFormalResume}
-            editable={isEditing && reviewState === "ready"}
+            editable={isEditing && !isSaving && (reviewState === "ready" || reviewState === "needs_attention")}
           />
 
           {error && <p className="preview-error">{error}</p>}
 
-          {reviewState === "ready" && (
+          {(reviewState === "ready" || reviewState === "needs_attention") && (
             <div className="preview-actions">
+              <span>正文版本 {contentVersion}{reviewState === "ready" ? " · 审核通过" : " · 需修改"}</span>
               <button
                 className="secondary-action"
                 type="button"
                 onClick={handleEditToggle}
-                disabled={isSaving}
+                disabled={isSaving || contentVersion < 1}
               >
                 {isSaving && isEditing ? (
                   <LoaderCircle className="spin" size={18} aria-hidden />
@@ -651,20 +672,20 @@ export default function Home() {
                 ) : (
                   <Pencil size={18} aria-hidden />
                 )}
-                {isEditing ? "保存修改" : "修改"}
+                {isEditing ? "保存并重新审核" : "修改"}
               </button>
               <button
                 className="primary-action"
                 type="button"
                 onClick={handleComplete}
-                disabled={isSaving}
+                disabled={isSaving || isEditing || reviewState !== "ready" || contentVersion < 1}
               >
                 {isSaving && !isEditing ? (
                   <LoaderCircle className="spin" size={18} aria-hidden />
                 ) : (
                   <Download size={18} aria-hidden />
                 )}
-                完成
+                确认并导出
               </button>
             </div>
           )}

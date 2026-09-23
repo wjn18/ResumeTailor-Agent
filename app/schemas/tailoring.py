@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Literal, Optional
 from uuid import UUID
 
@@ -161,7 +161,7 @@ class TailoringReviewRequest(BaseModel):
 
 class TailoringReviewResponse(BaseModel):
     thread_id: str
-    status: Literal["awaiting_confirmation", "needs_attention"]
+    status: Literal["awaiting_confirmation", "needs_attention", "completed"]
     revision_count: int
     draft: TailoredResumeDraft
     fact_check_report: FactCheckReport
@@ -172,7 +172,7 @@ class TailoringReviewResponse(BaseModel):
 
 class TailoringBuildResponse(BaseModel):
     thread_id: str
-    status: Literal["awaiting_confirmation", "needs_attention"]
+    status: Literal["awaiting_confirmation", "needs_attention", "completed"]
     revision_count: int
     match_report: RequirementMatchReport
     draft: TailoredResumeDraft
@@ -201,6 +201,11 @@ class SavedTailoredResume(BaseModel):
     updated_at: Optional[str] = None
     confirmed_at: Optional[str] = None
     docx_file_name: Optional[str] = None
+    workflow_thread_id: Optional[str] = None
+    content_version: int = 0
+    reviewed_content_version: int = 0
+    content_hash: Optional[str] = None
+    reviewed_content_hash: Optional[str] = None
 
 
 class SavedTailoredResumeSummary(BaseModel):
@@ -234,6 +239,20 @@ class ConfirmTailoredResumeRequest(BaseModel):
     formal_resume: FormalResumeDocument
 
 
+class TailoringDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID
+    action: Literal["edit", "confirm"]
+    expected_version: int = Field(ge=1)
+    formal_resume: Optional[FormalResumeDocument] = None
+
+    @model_validator(mode="after")
+    def validate_action(self):
+        if (self.action == "edit") != (self.formal_resume is not None):
+            raise ValueError("编辑必须提供正文；确认只能引用已审核的版本。")
+        return self
+
+
 class TailoringTaskResponse(BaseModel):
     thread_id: str
     status: Literal[
@@ -251,5 +270,11 @@ class TailoringTaskResponse(BaseModel):
     revision_count: int = 0
     draft_version: int = 0
     audit_version: int = 0
+    content_version: int = 0
+    reviewed_content_version: int = 0
+    content_hash: Optional[str] = None
+    reviewed_content_hash: Optional[str] = None
+    pending_decision: Optional[dict] = None
+    current_document: Optional[FormalResumeDocument] = None
     preview: Optional[TailoringInitialBuildResponse] = None
     result: Optional[TailoringBuildResponse] = None

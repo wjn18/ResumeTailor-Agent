@@ -86,7 +86,7 @@ export type TailoringInitialBuildResponse = {
 
 export type TailoringReviewResponse = {
   thread_id: string;
-  status: "awaiting_confirmation" | "needs_attention";
+  status: "awaiting_confirmation" | "needs_attention" | "completed";
   revision_count: number;
   draft: TailoredResumeDraft;
   formal_resume: FormalResume;
@@ -104,7 +104,8 @@ export type TailoringReviewResponse = {
 export type TailoringBuildResponse = TailoringReviewResponse;
 
 export type TailoringTask = {
-  thread_id: string;
+    thread_id: string;
+    graph_version: number;
   status: "queued" | "running" | "saving" | "initial_ready" | "awaiting_confirmation"
     | "needs_attention" | "failed" | "cancelling" | "cancelled" | "completed";
   current_node: string | null;
@@ -113,6 +114,10 @@ export type TailoringTask = {
   revision_count: number;
   draft_version: number;
   audit_version: number;
+  content_version: number;
+  reviewed_content_version: number;
+  current_document: FormalResume | null;
+  pending_decision: {can_confirm: boolean} | null;
   preview: TailoringInitialBuildResponse | null;
   result: TailoringBuildResponse | null;
 };

@@ -64,7 +64,7 @@ class MemoryRunStore:
     def cancel(self, thread_id):
         with self.guard:
             run = self.get(thread_id)
-            if run["status"] in {"saving", "awaiting_confirmation", "needs_attention"}:
+            if run["status"] in {"saving", "awaiting_confirmation", "needs_attention", "completed"}:
                 raise RunConflict("任务已进入结果保存阶段，无法取消。")
             status = "cancelling" if run["status"] in {"running", "cancelling"} else "cancelled"
             return self.update(thread_id, cancel_requested=True, status=status)

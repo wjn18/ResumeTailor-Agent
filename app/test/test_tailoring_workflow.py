@@ -757,6 +757,10 @@ class TailoringWorkflowTests(unittest.TestCase):
                 side_effect=lambda item: stored.setdefault(item["tailored_resume_id"], item),
             ),
             patch(
+                "app.services.tailored_resume_storage.project_tailored_resume_document",
+                side_effect=lambda item: (stored.__setitem__(item["tailored_resume_id"], item) or item),
+            ),
+            patch(
                 "app.services.tailored_resume_storage._write_tailored_resume",
                 side_effect=lambda item: stored.__setitem__(item.tailored_resume_id, item),
             ),
@@ -870,7 +874,7 @@ class TailoringWorkflowTests(unittest.TestCase):
             all(match.match_status == "unknown" for match in report.matches)
         )
 
-    def test_formal_resume_can_be_edited_confirmed_and_downloaded(self):
+    def test_legacy_edits_cannot_bypass_review_and_docx_layout_is_preserved(self):
         jd = sample_jd()
         resume = sample_resume()
         draft = TailoredResumeDraft(
@@ -948,16 +952,15 @@ class TailoringWorkflowTests(unittest.TestCase):
                     f"/tailoring/saved/{saved.tailored_resume_id}/confirm",
                     json={"formal_resume": edited.model_dump()},
                 )
-                self.assertEqual(confirm_response.status_code, 200)
-                self.assertEqual(confirm_response.json()["status"], "confirmed")
+                self.assertEqual(confirm_response.status_code, 409)
 
                 download_response = client.get(
                     f"/tailoring/saved/{saved.tailored_resume_id}/docx"
                 )
-                self.assertEqual(download_response.status_code, 200)
-                self.assertTrue(download_response.content.startswith(b"PK"))
+                self.assertEqual(download_response.status_code, 409)
 
-                docx_path = data_dir / f"{saved.tailored_resume_id}.docx"
+                from app.services.docx_export import export_formal_resume_docx
+                docx_path = export_formal_resume_docx(saved.tailored_resume_id, edited)
                 document = Document(docx_path)
                 document_text = "\n".join(
                     paragraph.text for paragraph in document.paragraphs

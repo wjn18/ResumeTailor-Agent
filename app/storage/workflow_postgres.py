@@ -124,7 +124,7 @@ class PostgresRunStore:
                 """UPDATE tailoring_runs SET cancel_requested=TRUE,
                    status=CASE WHEN status IN ('running','cancelling') THEN 'cancelling' ELSE 'cancelled' END,
                    updated_at=CURRENT_TIMESTAMP
-                   WHERE thread_id=%s AND status NOT IN ('saving','awaiting_confirmation','needs_attention')
+                   WHERE thread_id=%s AND status NOT IN ('saving','awaiting_confirmation','needs_attention','completed')
                    RETURNING *""", (thread_id,),
             ).fetchone()
             if row:
@@ -152,11 +152,19 @@ class PostgresRunStore:
                 raise RunBusy("该任务正在处理。")
             try:
                 self._get(conn, thread_id)
+                saver = PostgresSaver(conn)
+
+                def locked(operation, *args, **kwargs):
+                    # Saver pipelines can run in graph executor threads. Keep all
+                    # task queries out of the same connection's pipeline region.
+                    with saver.lock:
+                        return operation(conn, thread_id, *args, **kwargs)
+
                 yield RunLease(
-                    PostgresSaver(conn),
-                    lambda: self._get(conn, thread_id),
-                    lambda **changes: self._update(conn, thread_id, **changes),
-                    lambda: self._begin_finalizing(conn, thread_id),
+                    saver,
+                    lambda: locked(self._get),
+                    lambda **changes: locked(self._update, **changes),
+                    lambda: locked(self._begin_finalizing),
                 )
             finally:
                 # Do not let a reconnect release a different session's lock.
