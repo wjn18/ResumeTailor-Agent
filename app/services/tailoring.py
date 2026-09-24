@@ -242,7 +242,7 @@ class LocalFallbackTailoringClient(TailoringLLMClient):
         return TailoredResumeDraft(
             jd_id=jd.jd_id,
             resume_id=resume.resume_id,
-            headline=jd.job_title,
+            headline=None,
             summary=summary,
             work_experiences=work_experiences,
             honor_awards=honor_awards,
@@ -341,7 +341,7 @@ class LocalFallbackTailoringClient(TailoringLLMClient):
         return TailoredResumeDraft(
             jd_id=jd.jd_id,
             resume_id=resume.resume_id,
-            headline=draft.headline or jd.job_title,
+            headline=None,
             summary=revise_section(draft.summary),
             work_experiences=[
                 TailoredWorkExperience(
@@ -564,7 +564,7 @@ def assemble_formal_resume(
 
     return FormalResumeDocument(
         name=resume.name,
-        headline=revised_draft.headline or jd.job_title,
+        headline=None,
         email=resume.email,
         phone=resume.phone,
         personal_contacts=[
@@ -605,6 +605,7 @@ def assemble_formal_resume(
                 start_date=project.start_date,
                 end_date=project.end_date,
                 technologies=project.technologies,
+                links=project.links,
                 bullets=[
                     resume_action_text(fact.fact_text, resume.name)
                     for fact in project.facts
@@ -1284,7 +1285,7 @@ Return valid JSON:
 {{
   "jd_id": "{jd.jd_id}",
   "resume_id": "{resume.resume_id}",
-  "headline": "string or null",
+  "headline": null,
   "summary": [
     {{"section": "advantages", "sentence": "string", "source_fact_ids": ["fact_id"]}}
   ],
@@ -1410,7 +1411,7 @@ Return valid JSON:
 {{
   "jd_id": "{jd.jd_id}",
   "resume_id": "{resume.resume_id}",
-  "headline": "string or null",
+  "headline": null,
   "summary": [
     {{"section": "advantages", "sentence": "string", "source_fact_ids": ["fact_id"]}}
   ],

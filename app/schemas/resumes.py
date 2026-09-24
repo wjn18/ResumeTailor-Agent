@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional
+from app.schemas.project_links import ProjectLink, merge_links, relocate_project_contacts
 
 
 class SourceDocument(BaseModel):
@@ -94,6 +95,7 @@ class Project(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     technologies: list[str] = Field(default_factory=list)
+    links: list[ProjectLink] = Field(default_factory=list)
     facts: list[ExperienceFact] = Field(default_factory=list)
 
 
@@ -179,6 +181,10 @@ class ParsedResume(BaseModel):
             self.email = _first_contact_value(self.personal_contacts, "email")
         if not self.phone:
             self.phone = _first_contact_value(self.personal_contacts, "phone")
+        # Retain the original contact facts as evidence for old saved drafts.
+        relocate_project_contacts(self.projects, self.personal_contacts)
+        for project in self.projects:
+            project.links = merge_links(project.links)
         return self
 
 

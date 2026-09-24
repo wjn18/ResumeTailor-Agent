@@ -94,6 +94,7 @@ const emptyProject = (): FormalProject => ({
   start_date: null,
   end_date: null,
   technologies: [],
+  links: [],
   bullets: [""],
 });
 
@@ -762,6 +763,13 @@ function ResumeEditor({
     onChange({...resume, [key]: value});
   }
 
+  const visibleContacts = resume.personal_contacts
+    .map((contact, index) => ({contact, index}))
+    .filter(({contact}) =>
+      !["website", "github", "linkedin", "url", "link", "portfolio"].includes(contact.contact_type.trim().toLowerCase())
+      && !/(https?:\/\/|www\.)/i.test(contact.contact_value),
+    );
+
   return (
     <article className={`resume-paper ${editable ? "is-editing" : ""}`}>
       <div className="resume-masthead">
@@ -772,18 +780,11 @@ function ResumeEditor({
           className="resume-name"
           placeholder="姓名"
         />
-        <EditableField
-          value={resume.headline ?? ""}
-          onChange={(value) => update("headline", value)}
-          editable={editable}
-          className="resume-headline"
-          placeholder="目标岗位"
-        />
         <div className="contact-line">
-          {resume.personal_contacts.length > 0 ? (
-            resume.personal_contacts.map((contact, index) => (
+          {visibleContacts.length > 0 ? (
+            visibleContacts.map(({contact, index}, position) => (
               <Fragment key={`${contact.contact_type}-${index}`}>
-                {index > 0 && <span>·</span>}
+                {position > 0 && <span>·</span>}
                 <EditableField
                   value={contact.contact_value}
                   onChange={(value) => {
@@ -1052,6 +1053,53 @@ function ResumeEditor({
                   update("projects", projects);
                 }}
               />
+              {(project.links ?? []).map((link, linkIndex) => (
+                <div className="project-link" key={`link-${linkIndex}`}>
+                  <EditableField
+                    value={link.label ?? "项目链接"}
+                    editable={editable}
+                    placeholder="链接名称"
+                    onChange={(label) => {
+                      const links = [...(project.links ?? [])];
+                      links[linkIndex] = {...link, label};
+                      const projects = [...resume.projects];
+                      projects[index] = {...project, links};
+                      update("projects", projects);
+                    }}
+                  />
+                  <span>：</span>
+                  {editable ? (
+                    <EditableField
+                      value={link.url}
+                      editable={editable}
+                      placeholder="https://…"
+                      onChange={(url) => {
+                        const links = [...(project.links ?? [])];
+                        links[linkIndex] = {...link, url};
+                        const projects = [...resume.projects];
+                        projects[index] = {...project, links};
+                        update("projects", projects);
+                      }}
+                    />
+                  ) : /^(https?:\/\/|www\.)/i.test(link.url) ? (
+                    <a href={/^www\./i.test(link.url) ? `https://${link.url}` : link.url} target="_blank" rel="noopener noreferrer">{link.url}</a>
+                  ) : <span>{link.url}</span>}
+                  {editable && (
+                    <IconButton label="删除项目链接" onClick={() => {
+                      const projects = [...resume.projects];
+                      projects[index] = {...project, links: project.links.filter((_, i) => i !== linkIndex)};
+                      update("projects", projects);
+                    }}><Trash2 size={14} /></IconButton>
+                  )}
+                </div>
+              ))}
+              {editable && (
+                <AddButton label="添加项目链接" onClick={() => {
+                  const projects = [...resume.projects];
+                  projects[index] = {...project, links: [...(project.links ?? []), {label: "项目链接", url: ""}]};
+                  update("projects", projects);
+                }} />
+              )}
             </div>
           ))}
           {editable && (

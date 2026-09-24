@@ -401,12 +401,15 @@ button {
   line-height: 1.15;
 }
 
-.resume-headline {
-  display: block;
-  margin-top: 7px;
+.project-link {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.project-link a {
   color: var(--blue-dark);
-  font-size: 14px;
-  font-weight: 700;
 }
 
 .contact-line {

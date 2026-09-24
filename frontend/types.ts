@@ -28,6 +28,7 @@ export type FormalProject = {
   start_date: string | null;
   end_date: string | null;
   technologies: string[];
+  links: {url: string; label: string | null}[];
   bullets: string[];
 };
 

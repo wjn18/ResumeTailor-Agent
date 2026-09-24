@@ -191,6 +191,10 @@ Fact extraction rules:
   duplicated in the top-level experience_facts array.
 - Put email, phone, website, location, GitHub, LinkedIn, WeChat, and other
   explicit contact details in personal_contacts. Preserve values exactly.
+- Project repositories, demos, videos, and project websites belong in the
+  corresponding project's links array, not personal_contacts or description
+  facts. Preserve each URL exactly and use its source label. Never invent a
+  URL or assign it to a project unless that association is explicit.
 - Personal-contact facts must stay under their personal_contact and must not be
   duplicated in the top-level experience_facts array.
 - Put employment content in work_experiences. Extract company, job title, start
@@ -307,6 +311,7 @@ Return valid JSON matching this shape:
       "start_date": "string or null",
       "end_date": "string or null",
       "technologies": ["string"],
+      "links": [{{"url": "exact project URL", "label": "string or null"}}],
       "facts": [
         {{
           "fact_id": "string",
@@ -427,6 +432,13 @@ def _personal_contact_parse_incomplete(
     parsed_data: dict,
     resume_text: str,
 ) -> bool:
+    # A correctly extracted repository URL alone is not a missing contact.
+    for project in parsed_data.get("projects", []) or []:
+        if not isinstance(project, dict):
+            continue
+        for link in project.get("links", []) or []:
+            if isinstance(link, dict) and isinstance(link.get("url"), str) and link["url"]:
+                resume_text = resume_text.replace(link["url"], "")
     has_contact = bool(
         re.search(
             (

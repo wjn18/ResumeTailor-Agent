@@ -184,6 +184,10 @@ Rules:
   education_experiences with exact school, degree, major, and dates.
 - If the user explicitly states contact information, put each item in
   personal_contacts and preserve its exact value.
+- Project repositories, demos, videos, and project websites belong in the
+  corresponding project's links array, not personal_contacts or description
+  facts. Preserve each URL exactly and use its source label. Never invent a
+  URL or assign it to a project unless that association is explicit.
 - Education and personal-contact facts must remain under their structured item
   and must not be duplicated in experience_facts.
 - Return empty arrays for sections that are not stated.
@@ -283,6 +287,7 @@ Return valid JSON matching this shape:
       "start_date": "string or null",
       "end_date": "string or null",
       "technologies": ["string"],
+      "links": [{{"url": "exact project URL", "label": "string or null"}}],
       "facts": [
         {{
           "fact_id": "string",

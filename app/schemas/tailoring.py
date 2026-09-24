@@ -4,6 +4,7 @@ from uuid import UUID
 
 from app.schemas.jds import ParsedJD
 from app.schemas.resumes import ParsedResume
+from app.schemas.project_links import ProjectLink, merge_links, relocate_project_contacts
 
 
 class RequirementMatch(BaseModel):
@@ -83,6 +84,7 @@ class FormalProject(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     technologies: list[str] = Field(default_factory=list)
+    links: list[ProjectLink] = Field(default_factory=list)
     bullets: list[str] = Field(default_factory=list)
 
 
@@ -118,6 +120,13 @@ class FormalResumeDocument(BaseModel):
     education: list[FormalEducation] = Field(default_factory=list)
     projects: list[FormalProject] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def relocate_legacy_project_links(self):
+        self.personal_contacts = relocate_project_contacts(self.projects, self.personal_contacts)
+        for project in self.projects:
+            project.links = merge_links(project.links)
+        return self
 
 
 class MatchRequest(BaseModel):

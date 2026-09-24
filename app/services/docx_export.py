@@ -6,9 +6,11 @@ from docx.enum.section import WD_SECTION
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.shared import Inches, Pt, RGBColor
 
 from app.schemas.tailoring import FormalResumeDocument
+from app.schemas.project_links import is_link_contact
 TAILORED_RESUME_EXPORT_DIR = Path(tempfile.gettempdir()) / "resume_tailor_exports"
 
 
@@ -102,14 +104,6 @@ def _add_resume_masthead(
     run = title.add_run(name)
     _set_run_font(run, size=22, color=INK, bold=True)
 
-    if resume.headline:
-        headline = document.add_paragraph()
-        headline.paragraph_format.space_before = Pt(0)
-        headline.paragraph_format.space_after = Pt(3)
-        headline.paragraph_format.keep_with_next = True
-        run = headline.add_run(resume.headline.strip())
-        _set_run_font(run, size=11, color=ACCENT, bold=True)
-
     contact_items = [
         (
             f"{contact.label}：{contact.contact_value.strip()}"
@@ -117,7 +111,7 @@ def _add_resume_masthead(
             else contact.contact_value.strip()
         )
         for contact in resume.personal_contacts
-        if contact.contact_value.strip()
+        if contact.contact_value.strip() and not is_link_contact(contact)
     ]
     if not contact_items:
         contact_items = [
@@ -199,6 +193,23 @@ def _add_resume_content(
 
             for bullet in project.bullets:
                 _add_bullet(document, bullet)
+
+            for link in project.links:
+                if not link.url.strip():
+                    continue
+                paragraph = document.add_paragraph()
+                paragraph.paragraph_format.keep_together = True
+                label = paragraph.add_run(f"{link.label or '项目链接'}：")
+                _set_run_font(label, size=9, color=MUTED)
+                run = paragraph.add_run(link.url.strip())
+                _set_run_font(run, size=9, color=ACCENT)
+                # Only web URLs become active hyperlinks; edited text stays visible.
+                if link.url.lower().startswith(("https://", "http://", "www.")):
+                    target = link.url if not link.url.lower().startswith("www.") else f"https://{link.url}"
+                    hyperlink = OxmlElement("w:hyperlink")
+                    hyperlink.set(qn("r:id"), paragraph.part.relate_to(target, RT.HYPERLINK, is_external=True))
+                    hyperlink.append(run._r)
+                    paragraph._p.append(hyperlink)
 
     if resume.honor_awards:
         document.add_heading("荣誉奖项", level=1)

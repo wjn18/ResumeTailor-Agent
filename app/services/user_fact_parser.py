@@ -1,4 +1,5 @@
 from uuid import uuid4
+from app.schemas.project_links import merge_links
 
 from app.schemas.resumes import (
     EducationExperience,
@@ -452,6 +453,7 @@ def _merge_projects(
                 "technologies": _deduplicate_strings(
                     existing.technologies + project.technologies
                 ),
+                "links": merge_links(existing.links, project.links),
                 "facts": _deduplicate_facts(existing.facts + project.facts),
             }
         )
